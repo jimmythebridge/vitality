@@ -1,0 +1,1119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<title>VITALITY · Workout Tracker</title>
+<link rel="manifest" href="manifest.json"/>
+<link rel="apple-touch-icon" href="icon-512.png"/>
+<meta name="theme-color" content="#0D0D0F"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet"/>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #0D0D0F; overscroll-behavior: none; }
+  body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; color: #E8E8EC; -webkit-font-smoothing: antialiased; }
+  #root { height: 100%; }
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
+  input[type=number] { -moz-appearance: textfield; }
+  ::-webkit-scrollbar { width: 0; }
+  button { font-family: inherit; }
+  * { -webkit-tap-highlight-color: transparent; }
+
+  @keyframes pulse-ring {
+    0%   { transform: scale(1);    opacity: 0.6; }
+    50%  { transform: scale(1.06); opacity: 0.2; }
+    100% { transform: scale(1);    opacity: 0.6; }
+  }
+  @keyframes flash-in {
+    0%   { opacity: 0; transform: scale(0.92); }
+    100% { opacity: 1; transform: scale(1); }
+  }
+  .anim-flash { animation: flash-in 0.22s ease-out both; }
+
+  .timer-ring-pulse { animation: pulse-ring 1.8s ease-in-out infinite; }
+
+  @keyframes progress-sweep {
+    from { stroke-dashoffset: var(--dash-start); }
+    to   { stroke-dashoffset: var(--dash-end); }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+// ─── EXERCISE LIBRARY ────────────────────────────────────────────────────────
+const EXERCISE_LIBRARY = {
+  warmup: [
+    "World's Greatest Stretch","Hip 90/90","Thread the Needle","Cat-Cow","Thoracic Rotation",
+    "Ankle Circles","Shoulder Circles","Leg Swings","Arm Circles","Inchworm",
+    "Hip Flexor Stretch","Glute Bridge","Dead Bug","Band Pull-Apart","Jumping Jacks",
+    "Bear Crawl","Cossack Squat","Wall Slides","Foam Roll Thoracic","Hip Circles",
+  ],
+  strength: [
+    "Bench Press","Squat","Deadlift","Overhead Press","Barbell Row","Pull-Up","Dip",
+    "Incline Bench Press","Romanian Deadlift","Front Squat","Bulgarian Split Squat",
+    "Lat Pulldown","Cable Row","Chest Fly","Tricep Pushdown","Bicep Curl","Hammer Curl",
+    "Lateral Raise","Face Pull","Leg Press","Leg Curl","Leg Extension","Calf Raise",
+    "Hip Thrust","Farmers Walk","Turkish Get-Up","Kettlebell Swing","Box Jump",
+    "Lunges","Step-Up","Goblet Squat","Sumo Deadlift","Hack Squat","Pendlay Row",
+    "Seated Row","Arnold Press","Skull Crushers","Close-Grip Bench","Preacher Curl",
+    "Cable Fly","Incline Dumbbell Curl","Overhead Tricep Extension","Reverse Fly",
+    "Trap Bar Deadlift","Zercher Squat","Good Morning","Nordic Curl","GHD Raise",
+  ],
+  cooldown: [
+    "Pigeon Pose","Hamstring Stretch","Quad Stretch","Hip Flexor Lunge","Child's Pose",
+    "Seated Forward Fold","Lying Spinal Twist","Doorway Chest Stretch","Cross-Body Shoulder Stretch",
+    "Calf Stretch","Butterfly Stretch","Neck Side Stretch","Foam Roll Quads","Foam Roll Thoracic",
+    "Downward Dog","Supine Glute Stretch","Figure Four","Couch Stretch",
+    "90/90 Hip Stretch","Shoulder Sleeper Stretch","Thoracic Extension on Foam Roller",
+  ],
+};
+
+// ─── SMART DEFAULTS ──────────────────────────────────────────────────────────
+const COMPOUND = ["Bench Press","Squat","Deadlift","Overhead Press","Barbell Row","Pull-Up",
+  "Incline Bench Press","Romanian Deadlift","Front Squat","Bulgarian Split Squat","Dip",
+  "Hip Thrust","Farmers Walk","Turkish Get-Up","Box Jump","Sumo Deadlift","Hack Squat",
+  "Pendlay Row","Trap Bar Deadlift","Zercher Squat","Good Morning","Nordic Curl","GHD Raise",
+  "Leg Press","Goblet Squat","Lunges","Step-Up"];
+
+function defaultTimings(exerciseName) {
+  const isCompound = COMPOUND.includes(exerciseName);
+  const isWarmup   = EXERCISE_LIBRARY.warmup.includes(exerciseName);
+  const isCooldown = EXERCISE_LIBRARY.cooldown.includes(exerciseName);
+  if (isWarmup || isCooldown) return { work: 40, rest: 10 };
+  if (isCompound)              return { work: 60, rest: 90 };
+  return                              { work: 45, rest: 60 };
+}
+
+// ─── STORAGE ─────────────────────────────────────────────────────────────────
+const STORAGE_KEY = "vitality_workout_history_v3";
+function saveHistory(h) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(h)); } catch {} }
+function loadHistory()  { try { const r = localStorage.getItem(STORAGE_KEY); return r ? JSON.parse(r) : {}; } catch { return {}; } }
+
+function calcStats(logs) {
+  if (!logs?.length) return null;
+  const weights = logs.map(l => parseFloat(l.weight)).filter(w => !isNaN(w) && w > 0);
+  if (!weights.length) return null;
+  return {
+    pb:         Math.max(...weights),
+    avg:        Math.round((weights.reduce((a,b)=>a+b,0)/weights.length)*10)/10,
+    lastWeight: weights[weights.length-1],
+    logCount:   logs.length,
+  };
+}
+
+// ─── AUDIO ───────────────────────────────────────────────────────────────────
+function beep(freq=880, dur=0.12, type="sine", vol=0.4) {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.type = type; osc.frequency.value = freq;
+    gain.gain.setValueAtTime(vol, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+    osc.start(); osc.stop(ctx.currentTime + dur);
+  } catch {}
+}
+function beepWork() { beep(660, 0.10, "sine", 0.3); setTimeout(()=>beep(880,0.15,"sine",0.4),120); }
+function beepRest() { beep(440, 0.15, "sine", 0.35); setTimeout(()=>beep(330,0.20,"sine",0.3),150); }
+function beepCountdown() { beep(1047, 0.08, "sine", 0.2); }
+
+// ─── FLAT WORKOUT QUEUE ──────────────────────────────────────────────────────
+// Builds a flat ordered list of "steps" from the workout structure.
+// Each step: { id, phase, label, subLabel, exerciseKey, setIndex, type:"work"|"rest"|"hold" }
+function buildQueue(workout) {
+  const steps = [];
+  let id = 0;
+
+  // Warmup
+  workout.warmup.forEach((item, i) => {
+    const t = defaultTimings(item.name);
+    steps.push({ id: id++, phase:"warmup", type:"work", label: item.name, subLabel:"Warm-up", exerciseKey:`warmup-${i}`, setIndex:0, work:t.work, rest:t.rest });
+    steps.push({ id: id++, phase:"warmup", type:"rest", label:"Rest",      subLabel:`Next: ${workout.warmup[i+1]?.name || "Strength work"}`, exerciseKey:`warmup-${i}`, setIndex:0, work:t.work, rest:t.rest });
+  });
+
+  // Supersets
+  workout.supersets.forEach((ss, si) => {
+    const totalSets = ss.exercises[0]?.sets?.length || 3;
+    for (let setIdx = 0; setIdx < totalSets; setIdx++) {
+      ss.exercises.forEach((ex, ei) => {
+        const t = ex.timings || defaultTimings(ex.name);
+        const isLastExInSet   = ei === ss.exercises.length - 1;
+        const isLastSetOfSS   = setIdx === totalSets - 1;
+        const nextLabel = !isLastExInSet
+          ? ss.exercises[ei+1].name
+          : isLastSetOfSS
+            ? (workout.supersets[si+1] ? `Superset ${si+2}` : "Cool down")
+            : `Set ${setIdx+2} · ${ss.exercises[0].name}`;
+
+        steps.push({
+          id: id++, phase:"strength", type:"work",
+          label: ex.name,
+          subLabel: `Superset ${si+1} · Set ${setIdx+1}/${totalSets}`,
+          exerciseKey: `ss${si}-ex${ei}`,
+          setIndex: setIdx,
+          ssIndex: si, exIndex: ei,
+          work: t.work, rest: t.rest,
+        });
+        steps.push({
+          id: id++, phase:"strength", type:"rest",
+          label: "Rest",
+          subLabel: `Next: ${nextLabel}`,
+          exerciseKey: `ss${si}-ex${ei}`,
+          setIndex: setIdx,
+          ssIndex: si, exIndex: ei,
+          work: t.work, rest: t.rest,
+          isLastExInSet, isLastSetOfSS,
+        });
+      });
+    }
+  });
+
+  // Cooldown
+  workout.cooldown.forEach((item, i) => {
+    const t = defaultTimings(item.name);
+    steps.push({ id: id++, phase:"cooldown", type:"work", label: item.name, subLabel:"Cool-down stretch", exerciseKey:`cd-${i}`, setIndex:0, work:t.work, rest:t.rest });
+    if (i < workout.cooldown.length - 1) {
+      steps.push({ id: id++, phase:"cooldown", type:"rest", label:"Rest", subLabel:`Next: ${workout.cooldown[i+1]?.name}`, exerciseKey:`cd-${i}`, setIndex:0, work:t.work, rest:t.rest });
+    }
+  });
+
+  return steps;
+}
+
+// ─── ICONS ───────────────────────────────────────────────────────────────────
+function Icon({ name, size=18, color="currentColor" }) {
+  const p = { width:size, height:size, fill:"none", stroke:color, strokeWidth:"2", strokeLinecap:"round", strokeLinejoin:"round", viewBox:"0 0 24 24" };
+  const d = {
+    plus:      <svg {...p} strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
+    minus:     <svg {...p} strokeWidth="2.5"><line x1="5" y1="12" x2="19" y2="12"/></svg>,
+    check:     <svg {...p} strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>,
+    x:         <svg {...p} strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+    chevDown:  <svg {...p} strokeWidth="2.5"><polyline points="6 9 12 15 18 9"/></svg>,
+    play:      <svg {...p} strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3" fill={color} stroke="none"/></svg>,
+    pause:     <svg {...p} strokeWidth="2.5"><rect x="6" y="4" width="4" height="16" fill={color} stroke="none"/><rect x="14" y="4" width="4" height="16" fill={color} stroke="none"/></svg>,
+    skip:      <svg {...p} strokeWidth="2"><polygon points="5 4 15 12 5 20 5 4" fill={color} stroke="none"/><line x1="19" y1="5" x2="19" y2="19" stroke={color} strokeWidth="2.5"/></svg>,
+    history:   <svg {...p}><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>,
+    refresh:   <svg {...p}><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>,
+    note:      <svg {...p}><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>,
+    trophy:    <svg {...p}><path d="M6 9H4.5a2.5 2.5 0 010-5H6"/><path d="M18 9h1.5a2.5 2.5 0 000-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0012 0V2z"/></svg>,
+    dumbbell:  <svg {...p}><path d="M6 4v16M18 4v16M4 8h4M16 8h4M4 16h4M16 16h4M8 12h8"/></svg>,
+    flame:     <svg width={size} height={size} viewBox="0 0 24 24" fill={color} stroke="none"><path d="M12 2C8 8 6 11 6 14a6 6 0 0012 0c0-3-2-6-6-12zm0 17a4 4 0 01-2.83-6.83C10 11.5 11 10 12 7c1 3 2 4.5 2.83 3.17A4 4 0 0112 19z"/></svg>,
+    bolt:      <svg width={size} height={size} viewBox="0 0 24 24" fill={color} stroke="none"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>,
+    timer:     <svg {...p}><circle cx="12" cy="13" r="8"/><polyline points="12 9 12 13 14.5 15.5"/><path d="M10 2h4"/><path d="M21 5l-1.5 1.5"/></svg>,
+    addTime:   <svg {...p} strokeWidth="2"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>,
+    settings:  <svg {...p}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>,
+    back:      <svg {...p} strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>,
+  };
+  return d[name] || null;
+}
+
+// ─── CIRCULAR TIMER RING ─────────────────────────────────────────────────────
+function TimerRing({ seconds, total, phase }) {
+  const R = 108;
+  const CIRC = 2 * Math.PI * R;
+  const pct = total > 0 ? seconds / total : 1;
+  const offset = CIRC * (1 - pct);
+  const isRest = phase === "rest";
+  const color = isRest ? "#A78BFA" : "#00E5FF";
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  const timeStr = mins > 0 ? `${mins}:${String(secs).padStart(2,"0")}` : String(seconds);
+  const warn = seconds <= 3 && seconds > 0;
+
+  return (
+    <div style={{ position:"relative", width:260, height:260, flexShrink:0 }}>
+      {/* Pulse rings when warning */}
+      {warn && (
+        <div className="timer-ring-pulse" style={{
+          position:"absolute", inset:0, borderRadius:"50%",
+          border:`3px solid ${color}`, opacity:0.4,
+        }}/>
+      )}
+      <svg width={260} height={260} style={{ position:"absolute", inset:0 }}>
+        {/* Track */}
+        <circle cx={130} cy={130} r={R} fill="none" stroke="#1a1a20" strokeWidth={10}/>
+        {/* Progress */}
+        <circle
+          cx={130} cy={130} r={R}
+          fill="none"
+          stroke={color}
+          strokeWidth={10}
+          strokeLinecap="round"
+          strokeDasharray={CIRC}
+          strokeDashoffset={offset}
+          transform="rotate(-90 130 130)"
+          style={{ transition: "stroke-dashoffset 1s linear, stroke 0.3s" }}
+        />
+      </svg>
+      {/* Centre content */}
+      <div style={{
+        position:"absolute", inset:0,
+        display:"flex", flexDirection:"column",
+        alignItems:"center", justifyContent:"center", gap:2,
+      }}>
+        <div style={{
+          fontSize: warn ? 52 : 58,
+          fontWeight: 900, fontFamily:"monospace",
+          color: warn ? "#FF4444" : color,
+          letterSpacing:"-2px",
+          transition:"color 0.2s",
+          lineHeight:1,
+        }}>{timeStr}</div>
+        <div style={{
+          fontSize:11, fontWeight:800, letterSpacing:"0.18em",
+          color: isRest ? "#7c6bd4" : "#0099bb",
+          marginTop:4,
+        }}>{isRest ? "REST" : "WORK"}</div>
+      </div>
+    </div>
+  );
+}
+
+// ─── TIMER SCREEN ─────────────────────────────────────────────────────────────
+function TimerScreen({ step, secondsLeft, totalSeconds, running, onPlayPause, onSkip, onAddTime, workout, onLogSet, onExit }) {
+  const isWork = step.type === "work";
+  const isRest = step.type === "rest";
+  const isStrength = step.phase === "strength";
+
+  // For strength work steps, get the current set data
+  const [weight, setWeight] = useState("");
+  const [reps, setReps]     = useState("");
+
+  const phaseColor = {
+    warmup:   "#FF6B35",
+    strength: isRest ? "#A78BFA" : "#00E5FF",
+    cooldown: "#A78BFA",
+  }[step.phase] || "#00E5FF";
+
+  const handleDone = () => {
+    if (isStrength && isWork && step.ssIndex !== undefined) {
+      onLogSet(step.ssIndex, step.exIndex, step.setIndex, { weight, reps });
+    }
+    onSkip();
+  };
+
+  return (
+    <div className="anim-flash" style={{
+      display:"flex", flexDirection:"column", alignItems:"center",
+      padding:"0 24px 32px",
+      minHeight:"100%",
+      background:"#0D0D0F",
+    }}>
+
+      {/* Top bar */}
+      <div style={{
+        display:"flex", alignItems:"center", justifyContent:"space-between",
+        width:"100%", padding:"14px 0 8px",
+      }}>
+        <button style={S.iconBtnSm} onClick={onExit}>
+          <Icon name="back" size={20} color="#666"/>
+        </button>
+        <div style={{ fontSize:11, fontWeight:800, letterSpacing:"0.15em", color:"#383840" }}>
+          {step.subLabel?.toUpperCase()}
+        </div>
+        <div style={{ width:36 }}/>
+      </div>
+
+      {/* Exercise name */}
+      <div style={{
+        fontSize: step.label.length > 18 ? 22 : 26,
+        fontWeight:900, textAlign:"center",
+        color:"#E8E8EC", marginBottom:4, marginTop:8,
+        letterSpacing:"-0.5px",
+        lineHeight:1.2,
+      }}>{step.label}</div>
+
+      {/* Phase pill */}
+      <div style={{
+        background: phaseColor + "1a",
+        border:`1px solid ${phaseColor}44`,
+        borderRadius:20, padding:"3px 12px", marginBottom:28,
+        fontSize:11, fontWeight:800, color:phaseColor, letterSpacing:"0.1em",
+      }}>
+        {isRest ? "REST" : step.phase === "warmup" ? "WARM UP" : step.phase === "cooldown" ? "COOL DOWN" : "WORK SET"}
+      </div>
+
+      {/* Ring */}
+      <TimerRing seconds={secondsLeft} total={totalSeconds} phase={step.type}/>
+
+      {/* Log inputs — only on strength WORK steps */}
+      {isStrength && isWork && (
+        <div style={{
+          display:"flex", alignItems:"center", gap:12,
+          marginTop:24, width:"100%",
+        }}>
+          <div style={S.logInputWrap}>
+            <span style={S.logInputLabel}>KG</span>
+            <input
+              style={S.logInput}
+              type="number" inputMode="decimal"
+              placeholder="—"
+              value={weight}
+              onChange={e=>setWeight(e.target.value)}
+            />
+          </div>
+          <div style={{ fontSize:22, color:"#252530", fontWeight:300 }}>×</div>
+          <div style={S.logInputWrap}>
+            <span style={S.logInputLabel}>REPS</span>
+            <input
+              style={S.logInput}
+              type="number" inputMode="numeric"
+              placeholder="—"
+              value={reps}
+              onChange={e=>setReps(e.target.value)}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Controls */}
+      <div style={{
+        display:"flex", alignItems:"center", gap:16,
+        marginTop: isStrength && isWork ? 20 : 32,
+        width:"100%",
+      }}>
+        {/* +30s */}
+        <button style={S.controlBtnSm} onClick={()=>onAddTime(30)}>
+          <Icon name="addTime" size={20} color="#555"/>
+          <span style={{fontSize:11,color:"#555",fontWeight:700}}>+30s</span>
+        </button>
+
+        {/* Play / Pause */}
+        <button
+          style={{
+            ...S.controlBtnLg,
+            background: running ? "#1a1a22" : "#00E5FF",
+            border: running ? "2px solid #2a2a34" : "2px solid #00E5FF",
+          }}
+          onClick={onPlayPause}
+        >
+          <Icon name={running?"pause":"play"} size={28} color={running?"#00E5FF":"#0D0D0F"}/>
+        </button>
+
+        {/* Skip / Done */}
+        <button
+          style={{
+            ...S.controlBtnSm,
+            background: isWork ? "#00E5FF1a" : "#A78BFA1a",
+            border: `1px solid ${isWork?"#00E5FF44":"#A78BFA44"}`,
+          }}
+          onClick={handleDone}
+        >
+          <Icon name="skip" size={20} color={isWork?"#00E5FF":"#A78BFA"}/>
+          <span style={{fontSize:11,color:isWork?"#00E5FF":"#A78BFA",fontWeight:700}}>
+            {isWork ? "Done" : "Skip"}
+          </span>
+        </button>
+      </div>
+
+      {/* Next preview */}
+      {step.subLabel && (
+        <div style={{
+          marginTop:24, padding:"10px 16px",
+          background:"#111115", borderRadius:10,
+          border:"1px solid #1c1c22", width:"100%",
+        }}>
+          <div style={{fontSize:10,color:"#383840",fontWeight:800,letterSpacing:"0.12em",marginBottom:3}}>COMING UP</div>
+          <div style={{fontSize:13,color:"#777",fontWeight:600}}>{step.subLabel}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── EXERCISE PICKER ─────────────────────────────────────────────────────────
+function ExercisePicker({ type, onSelect, onClose, history }) {
+  const [search, setSearch] = useState("");
+  const inputRef = useRef(null);
+  useEffect(()=>{ setTimeout(()=>inputRef.current?.focus(),100); },[]);
+  const list = EXERCISE_LIBRARY[type] || [];
+  const filtered = list.filter(e=>e.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={S.modalBox}>
+        <div style={S.modalHeader}>
+          <span style={S.modalTitle}>Select Exercise</span>
+          <button style={S.iconBtnSm} onClick={onClose}><Icon name="x" size={20} color="#888"/></button>
+        </div>
+        <div style={{padding:"10px 16px 0"}}>
+          <input ref={inputRef} style={S.searchInput} placeholder="Search…"
+            value={search} onChange={e=>setSearch(e.target.value)}/>
+        </div>
+        <div style={S.exerciseList}>
+          {filtered.map(ex=>{
+            const stats=calcStats(history[ex]);
+            return (
+              <button key={ex} style={S.exerciseItem} onClick={()=>{onSelect(ex);onClose();}}>
+                <span style={{fontSize:14,fontWeight:600,color:"#E8E8EC"}}>{ex}</span>
+                {stats&&(
+                  <span style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+                    <span style={{display:"flex",alignItems:"center",gap:3,fontSize:11,fontWeight:700,color:"#FFB800"}}>
+                      <Icon name="trophy" size={11} color="#FFB800"/> {stats.pb}kg
+                    </span>
+                    <span style={{fontSize:11,color:"#555"}}>avg {stats.avg}kg</span>
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── TIMING EDITOR ───────────────────────────────────────────────────────────
+function TimingEditor({ work, rest, onChange, onClose }) {
+  const [w, setW] = useState(work);
+  const [r, setR] = useState(rest);
+  return (
+    <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{...S.modalBox, maxHeight:"auto"}}>
+        <div style={S.modalHeader}>
+          <span style={S.modalTitle}>Set timings</span>
+          <button style={S.iconBtnSm} onClick={onClose}><Icon name="x" size={20} color="#888"/></button>
+        </div>
+        <div style={{padding:"16px 20px 28px",display:"flex",flexDirection:"column",gap:20}}>
+          {[{label:"Work time (seconds)",val:w,set:setW},{label:"Rest time (seconds)",val:r,set:setR}].map(({label,val,set})=>(
+            <div key={label}>
+              <div style={{fontSize:11,fontWeight:800,color:"#555",letterSpacing:"0.12em",marginBottom:8}}>{label.toUpperCase()}</div>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                {[15,30,45,60,90,120].map(v=>(
+                  <button key={v}
+                    style={{...S.timePill,...(val===v?S.timePillActive:{})}}
+                    onClick={()=>set(v)}>{v}s</button>
+                ))}
+              </div>
+              <input type="number" inputMode="numeric" value={val}
+                onChange={e=>set(Number(e.target.value))}
+                style={{...S.searchInput,marginTop:10,width:"100%"}}
+                placeholder="Custom seconds"/>
+            </div>
+          ))}
+          <button style={S.saveBtn} onClick={()=>{onChange(w,r);onClose();}}>
+            <Icon name="check" size={16} color="#0D0D0F"/> Apply timings
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── SET ROW ─────────────────────────────────────────────────────────────────
+function SetRow({ setNum, data, onChange, pb }) {
+  const isPB = data.weight&&parseFloat(data.weight)>0&&pb&&parseFloat(data.weight)>=pb;
+  return (
+    <div style={{...S.setRow,...(data.done?S.setRowDone:{}),...(isPB?S.setRowPB:{})}}>
+      <div style={S.setNum}>{setNum}</div>
+      <div style={{flex:1,display:"flex",alignItems:"center",gap:7}}>
+        <div style={S.inputWrap}>
+          <span style={S.inputLabel}>KG</span>
+          <input style={S.setInput} type="number" inputMode="decimal" placeholder="—"
+            value={data.weight} onChange={e=>onChange({...data,weight:e.target.value})}/>
+          {isPB&&<span style={S.pbBadge}>PB!</span>}
+        </div>
+        <span style={{fontSize:18,color:"#252530",fontWeight:300,flexShrink:0}}>×</span>
+        <div style={S.inputWrap}>
+          <span style={S.inputLabel}>REPS</span>
+          <input style={S.setInput} type="number" inputMode="numeric" placeholder="—"
+            value={data.reps} onChange={e=>onChange({...data,reps:e.target.value})}/>
+        </div>
+      </div>
+      <button style={{...S.doneBtn,...(data.done?S.doneBtnActive:{})}}
+        onClick={()=>onChange({...data,done:!data.done})}>
+        <Icon name="check" size={16} color={data.done?"#0D0D0F":"#333"}/>
+      </button>
+    </div>
+  );
+}
+
+// ─── EXERCISE BLOCK ───────────────────────────────────────────────────────────
+function ExerciseBlock({ label, exercise, sets, timings, onExerciseChange, onSetsChange, onTimingsChange, history, phase }) {
+  const [showPicker, setShowPicker]   = useState(false);
+  const [showTimings, setShowTimings] = useState(false);
+  const [showNote, setShowNote]       = useState(false);
+  const [note, setNote]               = useState("");
+  const stats  = calcStats(history[exercise]);
+  const timing = timings || defaultTimings(exercise);
+  const pickerType = phase==="warmup"?"warmup":phase==="cooldown"?"cooldown":"strength";
+
+  const addSet    = () => onSetsChange([...sets,{weight:"",reps:"",done:false}]);
+  const removeSet = () => sets.length>1 && onSetsChange(sets.slice(0,-1));
+  const updateSet = (i,v) => { const s=[...sets]; s[i]=v; onSetsChange(s); };
+
+  return (
+    <div style={S.exerciseBlock}>
+      <div style={S.exHeader}>
+        <span style={S.exLabel}>{label}</span>
+        <button style={S.exSelector} onClick={()=>setShowPicker(true)}>
+          <span style={{fontSize:14,fontWeight:700,color:"#E8E8EC"}}>{exercise||"Choose exercise"}</span>
+          <Icon name="chevDown" size={16} color="#00E5FF"/>
+        </button>
+      </div>
+
+      {stats&&(
+        <div style={S.statsBar}>
+          <span style={S.statItem}><Icon name="trophy" size={12} color="#FFB800"/> PB {stats.pb}kg</span>
+          <span style={{color:"#222",fontSize:12}}>|</span>
+          <span style={S.statItem}><Icon name="history" size={12} color="#888"/> Avg {stats.avg}kg</span>
+          <span style={{color:"#222",fontSize:12}}>|</span>
+          <span style={S.statItem}><Icon name="bolt" size={12} color="#00E5FF"/> Last {stats.lastWeight}kg</span>
+        </div>
+      )}
+
+      {/* Timing chips */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+        <div style={{display:"flex",gap:6}}>
+          <div style={S.timingChip}>
+            <Icon name="timer" size={11} color="#00E5FF"/>
+            <span style={{color:"#00E5FF"}}>{timing.work}s work</span>
+          </div>
+          <div style={{...S.timingChip,borderColor:"#A78BFA44",background:"#A78BFA0e"}}>
+            <Icon name="timer" size={11} color="#A78BFA"/>
+            <span style={{color:"#A78BFA"}}>{timing.rest}s rest</span>
+          </div>
+        </div>
+        <button style={S.timingEditBtn} onClick={()=>setShowTimings(true)}>
+          <Icon name="settings" size={13} color="#555"/>
+        </button>
+      </div>
+
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
+        <span style={S.setCountLabel}>{sets.length} SET{sets.length!==1?"S":""}</span>
+        <div style={{display:"flex",gap:4}}>
+          <button style={S.countBtn} onClick={removeSet}><Icon name="minus" size={13} color="#888"/></button>
+          <button style={S.countBtn} onClick={addSet}><Icon name="plus" size={13} color="#888"/></button>
+        </div>
+      </div>
+
+      {sets.map((s,i)=>(
+        <SetRow key={i} setNum={i+1} data={s} onChange={v=>updateSet(i,v)} pb={stats?.pb}/>
+      ))}
+
+      <button style={S.noteToggle} onClick={()=>setShowNote(!showNote)}>
+        <Icon name="note" size={13} color="#555"/>
+        <span style={{fontSize:12,color:"#555"}}>{showNote?"Hide note":note?"Edit note":"Add note"}</span>
+      </button>
+      {showNote&&(
+        <textarea style={S.noteInput} placeholder="Form cues, feelings, adjustments…"
+          value={note} onChange={e=>setNote(e.target.value)} rows={2}/>
+      )}
+
+      {showPicker&&<ExercisePicker type={pickerType} onSelect={onExerciseChange} onClose={()=>setShowPicker(false)} history={history}/>}
+      {showTimings&&<TimingEditor work={timing.work} rest={timing.rest}
+        onChange={(w,r)=>onTimingsChange({work:w,rest:r})} onClose={()=>setShowTimings(false)}/>}
+    </div>
+  );
+}
+
+// ─── SIMPLE ITEM ─────────────────────────────────────────────────────────────
+function SimpleItem({ exercise, onExerciseChange, history, phase, done, onToggle }) {
+  const [showPicker,setShowPicker]=useState(false);
+  return (
+    <div style={{...S.simpleItem,...(done?S.simpleItemDone:{})}}>
+      <button style={{...S.simpleDone,...(done?{background:"#00E5FF",border:"1px solid #00E5FF"}:{})}} onClick={onToggle}>
+        <Icon name="check" size={14} color={done?"#0D0D0F":"#333"}/>
+      </button>
+      <button style={S.simpleSelector} onClick={()=>setShowPicker(true)}>
+        <span style={{fontSize:14,fontWeight:600,color:"#E8E8EC",...(done?{textDecoration:"line-through",color:"#444"}:{})}}>{exercise||"Choose exercise"}</span>
+        <Icon name="chevDown" size={14} color={done?"#333":"#555"}/>
+      </button>
+      {showPicker&&<ExercisePicker type={phase} onSelect={onExerciseChange} onClose={()=>setShowPicker(false)} history={history}/>}
+    </div>
+  );
+}
+
+// ─── SUPERSET BLOCK ──────────────────────────────────────────────────────────
+function SupersetBlock({ index, data, onChange, history }) {
+  const updateEx = (ei,name) => {
+    const d={...data,exercises:data.exercises.map((e,i)=>i===ei?{...e,name}:e)};
+    onChange(d);
+  };
+  const updateSets = (ei,sets) => {
+    const d={...data,exercises:data.exercises.map((e,i)=>i===ei?{...e,sets}:e)};
+    onChange(d);
+  };
+  const updateTimings = (ei,timings) => {
+    const d={...data,exercises:data.exercises.map((e,i)=>i===ei?{...e,timings}:e)};
+    onChange(d);
+  };
+  return (
+    <div style={S.supersetBlock}>
+      <div style={S.supersetHeader}>
+        <div style={S.supersetBadge}>
+          <Icon name="bolt" size={12} color="#0D0D0F"/>
+          <span>SUPERSET {index+1}</span>
+        </div>
+      </div>
+      {data.exercises.map((ex,i)=>(
+        <ExerciseBlock key={i}
+          label={`EXERCISE ${String.fromCharCode(65+i)}`}
+          exercise={ex.name} sets={ex.sets} timings={ex.timings}
+          onExerciseChange={n=>updateEx(i,n)}
+          onSetsChange={s=>updateSets(i,s)}
+          onTimingsChange={t=>updateTimings(i,t)}
+          history={history} phase="strength"
+        />
+      ))}
+    </div>
+  );
+}
+
+// ─── PHASE HEADER ────────────────────────────────────────────────────────────
+function PhaseHeader({ icon, label, color, subtitle }) {
+  return (
+    <div style={{...S.phaseHeader,borderColor:color}}>
+      <div style={{...S.phaseIcon,background:color+"22"}}>
+        <Icon name={icon} size={16} color={color}/>
+      </div>
+      <div>
+        <div style={{fontSize:12,fontWeight:800,letterSpacing:"0.12em",color}}>{label}</div>
+        {subtitle&&<div style={{fontSize:11,color:"#555",marginTop:2}}>{subtitle}</div>}
+      </div>
+    </div>
+  );
+}
+
+// ─── PROGRESS RING (header) ──────────────────────────────────────────────────
+function ProgressRing({ total, done }) {
+  const pct=total===0?0:Math.round((done/total)*100);
+  const r=28,circ=2*Math.PI*r,offset=circ-(pct/100)*circ;
+  return (
+    <div style={{position:"relative",width:64,height:64,flexShrink:0}}>
+      <svg width={64} height={64}>
+        <circle cx={32} cy={32} r={r} fill="none" stroke="#1a1a1f" strokeWidth={5}/>
+        <circle cx={32} cy={32} r={r} fill="none" stroke="#00E5FF" strokeWidth={5}
+          strokeDasharray={circ} strokeDashoffset={offset}
+          strokeLinecap="round" transform="rotate(-90 32 32)"
+          style={{transition:"stroke-dashoffset 0.5s ease"}}/>
+      </svg>
+      <div style={{position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",fontSize:12,fontWeight:800,color:"#00E5FF",fontFamily:"monospace"}}>
+        {pct}%
+      </div>
+    </div>
+  );
+}
+
+// ─── HISTORY PANEL ───────────────────────────────────────────────────────────
+function HistoryPanel({ history, onClose }) {
+  const exercises=Object.keys(history).filter(k=>history[k]?.length>0);
+  return (
+    <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{...S.modalBox,maxHeight:"90vh"}}>
+        <div style={S.modalHeader}>
+          <span style={S.modalTitle}>Exercise History</span>
+          <button style={S.iconBtnSm} onClick={onClose}><Icon name="x" size={20} color="#888"/></button>
+        </div>
+        {exercises.length===0?(
+          <div style={{color:"#444",fontSize:14,padding:"40px 20px",textAlign:"center"}}>No history yet.</div>
+        ):(
+          <div style={{overflowY:"auto",padding:"8px 16px 32px",display:"flex",flexDirection:"column",gap:12}}>
+            {exercises.map(ex=>{
+              const stats=calcStats(history[ex]);
+              const logs=history[ex];
+              return (
+                <div key={ex} style={S.historyItem}>
+                  <div style={{fontSize:15,fontWeight:800,color:"#E8E8EC",marginBottom:8}}>{ex}</div>
+                  <div style={{display:"flex",gap:12,marginBottom:10,flexWrap:"wrap"}}>
+                    <span style={{display:"flex",alignItems:"center",gap:4,fontSize:12,fontWeight:700,color:"#FFB800"}}>
+                      <Icon name="trophy" size={12} color="#FFB800"/> PB {stats.pb}kg
+                    </span>
+                    <span style={{display:"flex",alignItems:"center",gap:4,fontSize:12,color:"#888"}}>
+                      <Icon name="history" size={12} color="#888"/> Avg {stats.avg}kg
+                    </span>
+                    <span style={{fontSize:12,color:"#444"}}>{logs.length} session{logs.length!==1?"s":""}</span>
+                  </div>
+                  <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                    {logs.slice(-5).reverse().map((l,i)=>(
+                      <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"5px 8px",background:"#0a0a0e",borderRadius:7}}>
+                        <span style={{fontSize:11,color:"#444",width:48,flexShrink:0}}>{new Date(l.date).toLocaleDateString("en-GB",{day:"2-digit",month:"short"})}</span>
+                        <span style={{fontSize:13,fontWeight:600,color:"#888",fontFamily:"monospace"}}>{l.weight}kg × {l.reps}</span>
+                        {i===0&&parseFloat(l.weight)===stats.pb&&<span style={{background:"#FFB800",color:"#0D0D0F",fontSize:9,fontWeight:900,borderRadius:4,padding:"2px 5px"}}>PB</span>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── DEFAULTS ────────────────────────────────────────────────────────────────
+const makeSet=()=>({weight:"",reps:"",done:false});
+const defaultWorkout=()=>({
+  warmup:[
+    {name:"World's Greatest Stretch",done:false},
+    {name:"Hip 90/90",done:false},
+    {name:"Dead Bug",done:false},
+  ],
+  supersets:[
+    {exercises:[{name:"Bench Press",sets:[makeSet(),makeSet(),makeSet()],timings:null},{name:"Barbell Row",sets:[makeSet(),makeSet(),makeSet()],timings:null}]},
+    {exercises:[{name:"Squat",sets:[makeSet(),makeSet(),makeSet()],timings:null},{name:"Romanian Deadlift",sets:[makeSet(),makeSet(),makeSet()],timings:null}]},
+    {exercises:[{name:"Overhead Press",sets:[makeSet(),makeSet(),makeSet()],timings:null},{name:"Pull-Up",sets:[makeSet(),makeSet(),makeSet()],timings:null}]},
+  ],
+  cooldown:[
+    {name:"Pigeon Pose",done:false},
+    {name:"Hamstring Stretch",done:false},
+    {name:"Child's Pose",done:false},
+  ],
+});
+
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
+function App() {
+  const [workout,setWorkout]         = useState(defaultWorkout);
+  const [history,setHistory]         = useState({});
+  const [showHistory,setShowHistory] = useState(false);
+  const [saved,setSaved]             = useState(false);
+  const [activeTab,setActiveTab]     = useState("warmup");
+
+  // Timer state
+  const [timerActive,setTimerActive]         = useState(false);
+  const [queue,setQueue]                     = useState([]);
+  const [queueIdx,setQueueIdx]               = useState(0);
+  const [secondsLeft,setSecondsLeft]         = useState(0);
+  const [totalSeconds,setTotalSeconds]       = useState(0);
+  const [running,setRunning]                 = useState(false);
+  const intervalRef                          = useRef(null);
+  const secondsRef                           = useRef(0);
+
+  useEffect(()=>{ setHistory(loadHistory()); },[]);
+
+  // ── Timer tick ──
+  useEffect(()=>{
+    if(!timerActive) return;
+    if(running){
+      intervalRef.current = setInterval(()=>{
+        secondsRef.current -= 1;
+        if(secondsRef.current <= 3 && secondsRef.current > 0) beepCountdown();
+        if(secondsRef.current <= 0){
+          clearInterval(intervalRef.current);
+          advanceQueue(false);
+        } else {
+          setSecondsLeft(secondsRef.current);
+        }
+      },1000);
+    } else {
+      clearInterval(intervalRef.current);
+    }
+    return ()=>clearInterval(intervalRef.current);
+  },[running,timerActive,queueIdx]);
+
+  function startTimer(idx, q) {
+    clearInterval(intervalRef.current);
+    const step = q[idx];
+    if(!step){ setTimerActive(false); return; }
+    const dur = step.type==="work" ? step.work : step.rest;
+    secondsRef.current = dur;
+    setSecondsLeft(dur);
+    setTotalSeconds(dur);
+    setQueueIdx(idx);
+    setRunning(true);
+  }
+
+  function advanceQueue(manual=false) {
+    clearInterval(intervalRef.current);
+    const step = queue[queueIdx];
+    const isWork = step?.type==="work";
+
+    if(isWork) beepWork(); else beepRest();
+
+    const next = queueIdx + 1;
+    if(next >= queue.length){
+      setTimerActive(false);
+      setRunning(false);
+      return;
+    }
+    startTimer(next, queue);
+  }
+
+  function launchTimer() {
+    const q = buildQueue(workout);
+    setQueue(q);
+    setTimerActive(true);
+    setQueueIdx(0);
+    const dur = q[0]?.work || 60;
+    secondsRef.current = dur;
+    setSecondsLeft(dur);
+    setTotalSeconds(dur);
+    setRunning(true);
+  }
+
+  function handleAddTime(secs) {
+    secondsRef.current += secs;
+    setSecondsLeft(s=>s+secs);
+  }
+
+  function handlePlayPause() { setRunning(r=>!r); }
+
+  function handleSkip() { advanceQueue(true); }
+
+  function handleLogSet(ssIdx, exIdx, setIdx, { weight, reps }) {
+    if(!weight && !reps) return;
+    const w={...workout,supersets:workout.supersets.map((ss,si)=>
+      si!==ssIdx?ss:{...ss,exercises:ss.exercises.map((ex,ei)=>
+        ei!==exIdx?ex:{...ex,sets:ex.sets.map((s,i)=>
+          i!==setIdx?s:{...s,weight:weight||s.weight,reps:reps||s.reps,done:true}
+        )}
+      )}
+    )};
+    setWorkout(w);
+  }
+
+  // ── Workout editing helpers ──
+  const updateWarmup   = (i,item)=>setWorkout(w=>({...w,warmup:w.warmup.map((x,j)=>j===i?item:x)}));
+  const updateCooldown = (i,item)=>setWorkout(w=>({...w,cooldown:w.cooldown.map((x,j)=>j===i?item:x)}));
+  const updateSuperset = (i,ss)  =>setWorkout(w=>({...w,supersets:w.supersets.map((x,j)=>j===i?ss:x)}));
+
+  const countSets=()=>{
+    let total=0,done=0;
+    workout.warmup.forEach(e=>{total++;if(e.done)done++;});
+    workout.supersets.forEach(ss=>ss.exercises.forEach(ex=>ex.sets.forEach(s=>{total++;if(s.done)done++;})));
+    workout.cooldown.forEach(e=>{total++;if(e.done)done++;});
+    return{total,done};
+  };
+
+  const handleSave=()=>{
+    const nh={...history};
+    workout.supersets.forEach(ss=>ss.exercises.forEach(ex=>{
+      if(!ex.name)return;
+      if(!nh[ex.name])nh[ex.name]=[];
+      ex.sets.forEach(s=>{
+        if(s.weight&&s.reps&&s.done)
+          nh[ex.name].push({weight:s.weight,reps:s.reps,date:new Date().toISOString()});
+      });
+    }));
+    saveHistory(nh);
+    setHistory(nh);
+    setSaved(true);
+    setTimeout(()=>setSaved(false),2500);
+  };
+
+  const handleReset=()=>{
+    if(window.confirm("Reset this workout? All current entries will be cleared.")){
+      setWorkout(defaultWorkout());
+      setActiveTab("warmup");
+    }
+  };
+
+  const{total,done}=countSets();
+  const tabs=[
+    {id:"warmup", label:"Warm Up",   icon:"flame",    color:"#FF6B35"},
+    {id:"supersets",label:"Work",    icon:"dumbbell", color:"#00E5FF"},
+    {id:"cooldown",label:"Cool Down",icon:"refresh",  color:"#A78BFA"},
+  ];
+
+  // ── TIMER OVERLAY ──
+  if(timerActive && queue.length){
+    const step=queue[queueIdx]||queue[0];
+    return (
+      <div style={{...S.root,overflowY:"auto"}}>
+        <TimerScreen
+          step={step}
+          secondsLeft={secondsLeft}
+          totalSeconds={totalSeconds}
+          running={running}
+          onPlayPause={handlePlayPause}
+          onSkip={handleSkip}
+          onAddTime={handleAddTime}
+          workout={workout}
+          onLogSet={handleLogSet}
+          onExit={()=>{setTimerActive(false);setRunning(false);clearInterval(intervalRef.current);}}
+        />
+      </div>
+    );
+  }
+
+  // ── MAIN LAYOUT ──
+  return (
+    <div style={S.root}>
+      {/* HEADER */}
+      <div style={S.header}>
+        <div>
+          <div style={{display:"flex",alignItems:"center",gap:6}}>
+            <Icon name="bolt" size={18} color="#00E5FF"/>
+            <span style={S.logoText}>VITALITY</span>
+          </div>
+          <div style={{fontSize:10,color:"#383840",letterSpacing:"0.1em",marginTop:2}}>
+            {new Date().toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short"}).toUpperCase()}
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <button style={S.iconBtnSm} onClick={()=>setShowHistory(true)}>
+            <Icon name="history" size={19} color="#555"/>
+          </button>
+          {/* START TIMER BUTTON */}
+          <button style={S.startTimerBtn} onClick={launchTimer}>
+            <Icon name="play" size={14} color="#0D0D0F"/>
+            <span>Start</span>
+          </button>
+          <ProgressRing total={total} done={done}/>
+        </div>
+      </div>
+
+      {/* TAB BAR */}
+      <div style={S.tabBar}>
+        {tabs.map(t=>(
+          <button key={t.id}
+            style={{...S.tab,...(activeTab===t.id?{...S.tabActive,borderColor:t.color,color:t.color}:{})}}
+            onClick={()=>setActiveTab(t.id)}>
+            <Icon name={t.icon} size={13} color={activeTab===t.id?t.color:"#444"}/>
+            <span>{t.label}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* CONTENT */}
+      <div style={S.content}>
+        {activeTab==="warmup"&&(
+          <div style={S.section}>
+            <PhaseHeader icon="flame" label="WARM UP" color="#FF6B35" subtitle="3 exercises · Activate & prep"/>
+            {workout.warmup.map((item,i)=>(
+              <SimpleItem key={i} exercise={item.name}
+                onExerciseChange={name=>updateWarmup(i,{...item,name})}
+                history={history} phase="warmup" done={item.done}
+                onToggle={()=>updateWarmup(i,{...item,done:!item.done})}/>
+            ))}
+            <button style={S.nextBtn} onClick={()=>setActiveTab("supersets")}>
+              Continue to Work <Icon name="chevDown" size={15} color="#0D0D0F"/>
+            </button>
+          </div>
+        )}
+
+        {activeTab==="supersets"&&(
+          <div style={S.section}>
+            <PhaseHeader icon="dumbbell" label="STRENGTH WORK" color="#00E5FF" subtitle="3 supersets · 2 exercises each"/>
+            {workout.supersets.map((ss,i)=>(
+              <SupersetBlock key={i} index={i} data={ss} onChange={d=>updateSuperset(i,d)} history={history}/>
+            ))}
+            <div style={{display:"flex",gap:10,marginTop:20}}>
+              <button style={S.resetBtn} onClick={handleReset}>
+                <Icon name="refresh" size={14} color="#666"/> Reset
+              </button>
+              <button style={{...S.saveBtn,...(saved?S.saveBtnDone:{})}} onClick={handleSave}>
+                {saved?<><Icon name="check" size={15} color="#0D0D0F"/> Saved!</>
+                      :<><Icon name="bolt"  size={15} color="#0D0D0F"/> Save Sets</>}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {activeTab==="cooldown"&&(
+          <div style={S.section}>
+            <PhaseHeader icon="refresh" label="COOL DOWN" color="#A78BFA" subtitle="3 stretches · Release & recover"/>
+            {workout.cooldown.map((item,i)=>(
+              <SimpleItem key={i} exercise={item.name}
+                onExerciseChange={name=>updateCooldown(i,{...item,name})}
+                history={history} phase="cooldown" done={item.done}
+                onToggle={()=>updateCooldown(i,{...item,done:!item.done})}/>
+            ))}
+            <div style={S.completionCard}>
+              <div style={{fontSize:36,marginBottom:4}}>🏆</div>
+              <div style={{fontSize:20,fontWeight:800,color:"#E8E8EC",letterSpacing:"0.04em"}}>Session Complete</div>
+              <div style={{fontSize:13,color:"#555",marginBottom:16}}>{done}/{total} items logged</div>
+              <button style={{...S.saveBtn,...(saved?S.saveBtnDone:{}),width:"100%"}} onClick={handleSave}>
+                {saved?<><Icon name="check" size={15} color="#0D0D0F"/> Saved to History!</>
+                      :<><Icon name="bolt"  size={15} color="#0D0D0F"/> Save & Log Session</>}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {showHistory&&<HistoryPanel history={history} onClose={()=>setShowHistory(false)}/>}
+    </div>
+  );
+}
+
+// ─── STYLES ──────────────────────────────────────────────────────────────────
+const S = {
+  root:       { display:"flex",flexDirection:"column",height:"100vh",maxWidth:480,margin:"0 auto",background:"#0D0D0F",color:"#E8E8EC",overflow:"hidden" },
+  header:     { display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 18px 12px",background:"#0D0D0F",borderBottom:"1px solid #141418",flexShrink:0 },
+  logoText:   { fontSize:17,fontWeight:900,letterSpacing:"0.18em",color:"#E8E8EC",fontFamily:"monospace" },
+  iconBtnSm:  { background:"#111115",border:"1px solid #1e1e26",borderRadius:9,padding:8,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center" },
+  startTimerBtn: { display:"flex",alignItems:"center",gap:5,padding:"8px 14px",borderRadius:9,background:"#00E5FF",border:"none",color:"#0D0D0F",fontSize:12,fontWeight:900,cursor:"pointer",letterSpacing:"0.06em" },
+  tabBar:     { display:"flex",flexShrink:0,background:"#0D0D0F",borderBottom:"1px solid #141418" },
+  tab:        { flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:5,padding:"11px 4px",background:"none",border:"none",borderBottom:"2px solid transparent",color:"#444",fontSize:11,fontWeight:700,letterSpacing:"0.05em",cursor:"pointer" },
+  tabActive:  { fontWeight:800,borderBottom:"2px solid" },
+  content:    { flex:1,overflowY:"auto",WebkitOverflowScrolling:"touch" },
+  section:    { padding:"14px 14px 32px" },
+  phaseHeader:{ display:"flex",alignItems:"center",gap:12,padding:"12px 14px",marginBottom:14,background:"#0f0f13",borderRadius:12,borderLeft:"3px solid" },
+  phaseIcon:  { width:34,height:34,borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center" },
+  simpleItem: { display:"flex",alignItems:"center",gap:10,padding:"11px 13px",marginBottom:7,background:"#111115",borderRadius:11,border:"1px solid #1c1c22" },
+  simpleItemDone:{ opacity:0.45 },
+  simpleDone: { width:30,height:30,borderRadius:8,flexShrink:0,background:"#1a1a1f",border:"1px solid #252530",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer" },
+  simpleSelector:{ flex:1,display:"flex",alignItems:"center",justifyContent:"space-between",background:"none",border:"none",cursor:"pointer",padding:0 },
+  supersetBlock:  { marginBottom:18,borderRadius:13,overflow:"hidden",border:"1px solid #1c1c22" },
+  supersetHeader: { background:"#0f0f13",padding:"9px 13px",borderBottom:"1px solid #1a1a1f" },
+  supersetBadge:  { display:"inline-flex",alignItems:"center",gap:5,background:"#00E5FF",borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:900,color:"#0D0D0F",letterSpacing:"0.1em" },
+  exerciseBlock:  { background:"#0e0e12",padding:"13px 13px 8px",borderBottom:"1px solid #141418" },
+  exHeader:   { display:"flex",alignItems:"center",gap:8,marginBottom:8 },
+  exLabel:    { fontSize:9,fontWeight:900,letterSpacing:"0.18em",color:"#383840",flexShrink:0 },
+  exSelector: { flex:1,display:"flex",alignItems:"center",justifyContent:"space-between",background:"#111115",border:"1px solid #1c1c22",borderRadius:8,padding:"8px 11px",cursor:"pointer" },
+  statsBar:   { display:"flex",alignItems:"center",gap:7,flexWrap:"wrap",background:"#0a0a0d",border:"1px solid #141418",borderRadius:8,padding:"6px 10px",marginBottom:9 },
+  statItem:   { display:"flex",alignItems:"center",gap:4,fontSize:11,fontWeight:600,color:"#777" },
+  timingChip: { display:"flex",alignItems:"center",gap:4,fontSize:10,fontWeight:800,padding:"3px 8px",borderRadius:6,background:"#00E5FF0e",border:"1px solid #00E5FF44" },
+  timingEditBtn:{ background:"none",border:"none",cursor:"pointer",padding:"2px 6px",display:"flex",alignItems:"center" },
+  setCountLabel:{ fontSize:9,fontWeight:900,color:"#383840",letterSpacing:"0.15em" },
+  countBtn:   { width:26,height:26,borderRadius:7,background:"#1a1a1f",border:"1px solid #252530",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer" },
+  setRow:     { display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #0f0f12" },
+  setRowDone: { opacity:0.45 },
+  setRowPB:   { background:"rgba(255,184,0,0.05)",borderRadius:8,padding:"7px 6px" },
+  setNum:     { width:20,height:20,borderRadius:5,flexShrink:0,background:"#1a1a1f",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:800,color:"#444" },
+  inputWrap:  { flex:1,position:"relative",display:"flex",flexDirection:"column",gap:2 },
+  inputLabel: { fontSize:9,fontWeight:800,color:"#2e2e38",letterSpacing:"0.15em" },
+  setInput:   { width:"100%",background:"#111115",border:"1px solid #1c1c22",borderRadius:8,padding:"8px 6px",color:"#E8E8EC",fontSize:17,fontWeight:800,fontFamily:"monospace",outline:"none",textAlign:"center" },
+  pbBadge:    { position:"absolute",top:-7,right:-3,background:"#FFB800",color:"#0D0D0F",fontSize:8,fontWeight:900,borderRadius:4,padding:"1px 4px" },
+  doneBtn:    { width:32,height:32,borderRadius:8,flexShrink:0,background:"#111115",border:"1px solid #1c1c22",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer" },
+  doneBtnActive:{ background:"#00E5FF",border:"1px solid #00E5FF" },
+  noteToggle: { display:"flex",alignItems:"center",gap:5,background:"none",border:"none",cursor:"pointer",padding:"5px 0 2px" },
+  noteInput:  { width:"100%",background:"#111115",border:"1px solid #1c1c22",borderRadius:8,padding:"8px 10px",color:"#999",fontSize:13,outline:"none",resize:"none",fontFamily:"'Inter',sans-serif",marginTop:4 },
+  nextBtn:    { width:"100%",display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginTop:16,padding:"14px",background:"#FF6B35",border:"none",borderRadius:11,color:"#0D0D0F",fontSize:14,fontWeight:900,cursor:"pointer",letterSpacing:"0.05em" },
+  saveBtn:    { flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"14px 20px",borderRadius:11,background:"#00E5FF",border:"none",color:"#0D0D0F",fontSize:14,fontWeight:900,cursor:"pointer",letterSpacing:"0.05em",transition:"background 0.2s" },
+  saveBtnDone:{ background:"#00C853" },
+  resetBtn:   { display:"flex",alignItems:"center",gap:6,padding:"14px 16px",borderRadius:11,background:"#111115",border:"1px solid #1c1c22",color:"#555",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0 },
+  completionCard:{ marginTop:24,padding:"28px 20px 20px",background:"#0f0f13",border:"1px solid #1c1c22",borderRadius:16,textAlign:"center",display:"flex",flexDirection:"column",alignItems:"center" },
+  overlay:    { position:"fixed",inset:0,background:"rgba(0,0,0,0.88)",zIndex:200,display:"flex",alignItems:"flex-end" },
+  modalBox:   { background:"#111115",borderRadius:"20px 20px 0 0",width:"100%",maxHeight:"80vh",display:"flex",flexDirection:"column",border:"1px solid #1e1e26",borderBottom:"none",maxWidth:480,margin:"0 auto" },
+  modalHeader:{ display:"flex",alignItems:"center",justifyContent:"space-between",padding:"16px 20px 12px",borderBottom:"1px solid #1a1a1f",flexShrink:0 },
+  modalTitle: { fontSize:16,fontWeight:800,color:"#E8E8EC" },
+  searchInput:{ width:"100%",background:"#1a1a1f",border:"1px solid #252530",borderRadius:10,padding:"10px 14px",color:"#E8E8EC",fontSize:14,outline:"none",fontFamily:"'Inter',sans-serif" },
+  exerciseList:{ overflowY:"auto",padding:"8px 16px 24px",display:"flex",flexDirection:"column",gap:4,flex:1 },
+  exerciseItem:{ display:"flex",alignItems:"center",justifyContent:"space-between",padding:"11px 13px",borderRadius:10,background:"#0e0e12",border:"1px solid #1c1c22",cursor:"pointer",textAlign:"left" },
+  historyItem:{ background:"#0e0e12",borderRadius:12,border:"1px solid #1c1c22",padding:"14px" },
+  timePill:   { padding:"6px 10px",borderRadius:8,background:"#1a1a1f",border:"1px solid #252530",color:"#666",fontSize:12,fontWeight:700,cursor:"pointer",flexShrink:0 },
+  timePillActive:{ background:"#00E5FF1a",border:"1px solid #00E5FF",color:"#00E5FF" },
+  // Timer screen
+  logInputWrap:{ flex:1,display:"flex",flexDirection:"column",gap:4 },
+  logInputLabel:{ fontSize:10,fontWeight:800,color:"#383840",letterSpacing:"0.15em",textAlign:"center" },
+  logInput:   { width:"100%",background:"#111115",border:"1px solid #1c1c22",borderRadius:12,padding:"14px 8px",color:"#E8E8EC",fontSize:28,fontWeight:900,fontFamily:"monospace",outline:"none",textAlign:"center" },
+  controlBtnSm:{ display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4,width:72,height:72,borderRadius:16,background:"#111115",border:"1px solid #1c1c22",cursor:"pointer",flexShrink:0 },
+  controlBtnLg:{ display:"flex",alignItems:"center",justifyContent:"center",flex:1,height:80,borderRadius:20,cursor:"pointer",flexShrink:0,transition:"all 0.15s" },
+};
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App/>);
+</script>
+<script>
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
+}
+</script>
+</body>
+</html>
