@@ -1,5 +1,11 @@
-const CACHE = "vitality-v1";
-const ASSETS = ["/", "/index.html"];
+const CACHE = "vitality-v2";
+const ASSETS = [
+  "./",
+  "./index.html",
+  "./manifest.json",
+  "./icon-192.png",
+  "./icon-512.png"
+];
 
 self.addEventListener("install", e => {
   e.waitUntil(
@@ -21,6 +27,6 @@ self.addEventListener("fetch", e => {
       const clone = res.clone();
       caches.open(CACHE).then(c => c.put(e.request, clone));
       return res;
-    }))
+    }).catch(() => caches.match("./index.html")))
   );
 });
