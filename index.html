@@ -166,6 +166,17 @@ function logSessionToday(name) {
   return sessions;
 }
 
+// Scheduled workouts: { "2026-06-25": templateId }, one workout per day
+const SCHEDULE_KEY = "vitality_schedule_v1";
+function loadSchedule() { try { const r = localStorage.getItem(SCHEDULE_KEY); return r ? JSON.parse(r) : {}; } catch { return {}; } }
+function saveScheduleEntry(dateKey, templateId) {
+  const all = loadSchedule();
+  if (templateId === null) { delete all[dateKey]; }
+  else { all[dateKey] = templateId; }
+  try { localStorage.setItem(SCHEDULE_KEY, JSON.stringify(all)); } catch {}
+  return all;
+}
+
 // Saved workout templates for the home carousel
 function saveTemplates(t) { try { localStorage.setItem(TEMPLATES_KEY, JSON.stringify(t)); } catch {} }
 function loadTemplates()  {
@@ -193,6 +204,38 @@ function addCustomExercise(type, name) {
   if (!all[type].some(e=>e.toLowerCase()===name.toLowerCase())) {
     all[type] = [...all[type], name];
     try { localStorage.setItem(CUSTOM_EX_KEY, JSON.stringify(all)); } catch {}
+  }
+  return all;
+}
+
+// ─── WORKOUT TAGS ─────────────────────────────────────────────────────────────
+const DEFAULT_TAGS = [
+  { emoji:"⭐️", label:"Priority" },
+  { emoji:"😮‍💨", label:"Recovery" },
+  { emoji:"💪", label:"Upper Body" },
+  { emoji:"🦿", label:"Lower Body" },
+  { emoji:"🏋️‍♀️", label:"Full Body" },
+  { emoji:"🤸", label:"Stretchy" },
+  { emoji:"⚡️", label:"Agile" },
+];
+const TAG_COLORS = ["#C8F03C","#A78BFA","#FFB800","#FF6B35","#5EEAD4","#F472B6","#60A5FA"];
+function tagColorFor(label) {
+  let hash = 0;
+  for (let i=0;i<label.length;i++) hash = (hash*31 + label.charCodeAt(i)) % TAG_COLORS.length;
+  return TAG_COLORS[Math.abs(hash)];
+}
+
+const CUSTOM_TAGS_KEY = "vitality_custom_tags_v1";
+function loadCustomTags() {
+  try { const r = localStorage.getItem(CUSTOM_TAGS_KEY); return r ? JSON.parse(r) : []; }
+  catch { return []; }
+}
+function addCustomTag(emoji, label) {
+  const all = loadCustomTags();
+  if (!all.some(t=>t.label.toLowerCase()===label.toLowerCase())) {
+    const next = [...all, { emoji, label }];
+    try { localStorage.setItem(CUSTOM_TAGS_KEY, JSON.stringify(next)); } catch {}
+    return next;
   }
   return all;
 }
@@ -344,6 +387,7 @@ function Icon({ name, size=18, color="currentColor" }) {
     settings:  <svg {...p}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>,
     back:      <svg {...p} strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>,
     heart:     <svg {...p} strokeWidth="2" fill={color==="#C8F03C"?color:"none"}><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>,
+    edit:      <svg {...p}><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>,
   };
   return d[name] || null;
 }
@@ -646,6 +690,93 @@ function ExercisePicker({ type, onSelect, onClose, history }) {
               </span>
             </button>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── TAG PICKER (multi-select, anchored search + create new) ────────────────
+function TagPicker({ selectedTags, onChange, onClose }) {
+  const [search, setSearch] = useState("");
+  const [customTags, setCustomTags] = useState([]);
+  const inputRef = useRef(null);
+  useEffect(()=>{ setTimeout(()=>inputRef.current?.focus(),100); setCustomTags(loadCustomTags()); },[]);
+
+  const fullList = [...DEFAULT_TAGS, ...customTags];
+  const filtered = fullList.filter(t=>t.label.toLowerCase().includes(search.toLowerCase()));
+
+  const trimmedSearch = search.trim();
+  const exactMatch = fullList.some(t=>t.label.toLowerCase()===trimmedSearch.toLowerCase());
+  const showAddRow = trimmedSearch.length > 0 && !exactMatch;
+
+  const isSelected = (label) => selectedTags.some(t=>t.label===label);
+
+  function toggleTag(tag) {
+    if (isSelected(tag.label)) {
+      onChange(selectedTags.filter(t=>t.label!==tag.label));
+    } else {
+      onChange([...selectedTags, tag]);
+    }
+  }
+
+  function handleAddNew() {
+    if (!trimmedSearch) return;
+    const newTag = { emoji:"🏷️", label:trimmedSearch };
+    const updated = addCustomTag(newTag.emoji, newTag.label);
+    setCustomTags(updated);
+    onChange([...selectedTags, newTag]);
+    setSearch("");
+  }
+
+  return (
+    <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={S.pickerBox}>
+        <div style={S.modalHeader}>
+          <span style={S.modalTitle}>Workout Tags</span>
+          <button style={S.iconBtnSm} onClick={onClose}><Icon name="x" size={20} color="#888"/></button>
+        </div>
+        <div style={S.pickerSearchWrap}>
+          <input ref={inputRef} style={S.searchInput} placeholder="Search or type to add new…"
+            value={search} onChange={e=>setSearch(e.target.value)}/>
+        </div>
+        <div style={S.exerciseList}>
+          {filtered.map(tag=>{
+            const selected = isSelected(tag.label);
+            const color = tagColorFor(tag.label);
+            return (
+              <button key={tag.label} style={{...S.tagPickerItem, ...(selected?{borderColor:color+"77",background:color+"14"}:{})}}
+                onClick={()=>toggleTag(tag)}>
+                <span style={{display:"flex",alignItems:"center",gap:9}}>
+                  <span style={{fontSize:17}}>{tag.emoji}</span>
+                  <span style={{fontSize:14,fontWeight:600,color:"#E8E8EC"}}>{tag.label}</span>
+                </span>
+                <span style={{...S.tagCheckbox, ...(selected?{background:color,border:`1px solid ${color}`}:{})}}>
+                  {selected && <Icon name="check" size={12} color="#0D0D0F"/>}
+                </span>
+              </button>
+            );
+          })}
+
+          {filtered.length===0 && !showAddRow && (
+            <div style={{color:"#444",fontSize:13,padding:"20px",textAlign:"center"}}>No tags found</div>
+          )}
+
+          {showAddRow && (
+            <button style={S.addExerciseRow} onClick={handleAddNew}>
+              <span style={S.addExerciseIcon}>
+                <Icon name="plus" size={15} color="#0D0D0F"/>
+              </span>
+              <span style={{fontSize:14,fontWeight:700,color:"#FFB800"}}>
+                Add "{trimmedSearch}"
+              </span>
+            </button>
+          )}
+        </div>
+        <div style={{padding:"12px 16px 18px",flexShrink:0}}>
+          <button style={S.saveBtn} onClick={onClose}>
+            <Icon name="check" size={16} color="#0D0D0F"/> Done
+          </button>
         </div>
       </div>
     </div>
@@ -975,7 +1106,7 @@ function PhaseHeader({ icon, label, color, subtitle }) {
 }
 
 // ─── CALENDAR MODULE ──────────────────────────────────────────────────────────
-function CalendarModule({ sessions, onClose }) {
+function CalendarModule({ sessions, schedule={}, templates=[], onDayTap }) {
   const [viewDate, setViewDate] = useState(new Date());
   const year  = viewDate.getFullYear();
   const month = viewDate.getMonth();
@@ -1016,24 +1147,23 @@ function CalendarModule({ sessions, onClose }) {
           if (d===null) return <div key={i} style={S.calCell}/>;
           const key = keyFor(d);
           const isToday = key === todayKey;
-          const session = sessions[key];
-          const hasSession = !!session;
+          const isCompleted = !!sessions[key];
+          const isScheduled = !!schedule[key];
           return (
-            <div key={i} style={S.calCell}>
+            <button key={i} style={S.calCellBtn} onClick={()=>onDayTap && onDayTap(key)}>
               <div style={{
                 ...S.calDayNum,
                 ...(isToday ? S.calDayToday : {}),
-                ...(hasSession && !isToday ? S.calDayLogged : {}),
+                ...(isCompleted && !isToday ? S.calDayLogged : {}),
               }}>
                 {d}
               </div>
-              {hasSession && (
-                <div style={{
-                  ...S.calDot,
-                  background: isToday ? "#E8E8EC" : "#C8F03C",
-                }}/>
-              )}
-            </div>
+              {isCompleted ? (
+                <div style={{...S.calDot, background: isToday ? "#E8E8EC" : "#C8F03C"}}/>
+              ) : isScheduled ? (
+                <div style={S.calDotScheduled}/>
+              ) : null}
+            </button>
           );
         })}
       </div>
@@ -1051,20 +1181,18 @@ const PHOTO_GRADIENTS = {
 
 function WorkoutCard({ tpl, dayLabel, onLaunch }) {
   const grad = PHOTO_GRADIENTS[tpl.name] || "linear-gradient(155deg,#1a1a1f 0%,#0d0d0f 65%)";
-  const tagColors = {
-    "Priority": { bg:"#C8F03C", fg:"#0D0D0F" },
-    "Modified": { bg:"#C8F03C22", fg:"#C8F03C" },
-    "Recovery": { bg:"#A78BFA22", fg:"#A78BFA" },
-  };
-  const tagStyle = tagColors[tpl.tag] || tagColors["Modified"];
+  const primaryTag = tpl.tags?.[0];
+  const tagColor = primaryTag ? tagColorFor(primaryTag.label) : "#C8F03C";
 
   return (
     <div className="carousel-card" style={{...S.workoutCard, background: grad}} onClick={()=>onLaunch(tpl)}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
         <span style={S.cardDayPill}>{dayLabel}</span>
-        <span style={{...S.cardTagPill, background:tagStyle.bg, color:tagStyle.fg}}>
-          {tpl.tag==="Priority" && "★ "}{tpl.tag}
-        </span>
+        {primaryTag && (
+          <span style={{...S.cardTagPill, background:tagColor+"22", color:tagColor}}>
+            {primaryTag.emoji} {primaryTag.label}
+          </span>
+        )}
       </div>
 
       <div style={S.cardBottomFade}/>
@@ -1091,6 +1219,186 @@ function WorkoutCarousel({ templates, onLaunch }) {
       {templates.map((tpl,i)=>(
         <WorkoutCard key={tpl.id} tpl={tpl} dayLabel={dayLabels[i]||"Upcoming"} onLaunch={onLaunch}/>
       ))}
+    </div>
+  );
+}
+
+// ─── TAG BROWSE ROW (swipeable, home screen) ─────────────────────────────────
+function TagBrowseRow({ onSelectTag }) {
+  const [customTags, setCustomTags] = useState([]);
+  useEffect(()=>{ setCustomTags(loadCustomTags()); },[]);
+  const allTags = [...DEFAULT_TAGS, ...customTags];
+
+  return (
+    <div className="carousel-track" style={{padding:"4px 18px 4px"}}>
+      {allTags.map(tag=>{
+        const color = tagColorFor(tag.label);
+        return (
+          <button key={tag.label} className="carousel-card" style={{...S.tagBrowseChip, borderColor:color+"44", background:color+"12"}}
+            onClick={()=>onSelectTag(tag)}>
+            <span style={{fontSize:18}}>{tag.emoji}</span>
+            <span style={{fontSize:13,fontWeight:700,color}}>{tag.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── WORKOUTS BY TAG SHEET ────────────────────────────────────────────────────
+function WorkoutsByTagSheet({ tag, templates, onClose, onOpenWorkout, onSchedule, onStart }) {
+  const color = tagColorFor(tag.label);
+  const matching = templates.filter(t => (t.tags||[]).some(tt=>tt.label===tag.label));
+
+  return (
+    <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{...S.modalBox, maxHeight:"75vh"}}>
+        <div style={S.modalHeader}>
+          <span style={S.modalTitle}>{tag.emoji} {tag.label}</span>
+          <button style={S.iconBtnSm} onClick={onClose}><Icon name="x" size={20} color="#888"/></button>
+        </div>
+        <div style={{overflowY:"auto",padding:"10px 16px 24px",display:"flex",flexDirection:"column",gap:10}}>
+          {matching.length===0 && (
+            <div style={{color:"#444",fontSize:13,padding:"30px 20px",textAlign:"center"}}>
+              No saved workouts have this tag yet.
+            </div>
+          )}
+          {matching.map(tpl=>(
+            <div key={tpl.id} style={{...S.tagSheetItem, borderColor:color+"33"}}>
+              <button style={{flex:1,minWidth:0,textAlign:"left",background:"none",border:"none",cursor:"pointer",padding:0}}
+                onClick={()=>onOpenWorkout(tpl)}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:18}}>{tpl.emoji}</span>
+                  <span className="block-display" style={{fontSize:16,color:"#E8E8EC"}}>{tpl.name}</span>
+                </div>
+                <div style={{fontSize:12,color:"#666",marginTop:3}}>{tpl.duration} min · {tpl.type}</div>
+              </button>
+              <div style={{display:"flex",gap:6,flexShrink:0}}>
+                <button style={S.tagSheetIconBtn} onClick={()=>onSchedule(tpl)}>
+                  <Icon name="history" size={15} color="#999"/>
+                </button>
+                <button style={{...S.tagSheetIconBtn, background:"#C8F03C", border:"1px solid #C8F03C"}} onClick={()=>onStart(tpl)}>
+                  <Icon name="play" size={15} color="#0D0D0F"/>
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── SCHEDULE DATE PICKER ─────────────────────────────────────────────────────
+function ScheduleDatePicker({ tpl, onClose, onConfirm }) {
+  const [viewDate, setViewDate] = useState(new Date());
+  const year = viewDate.getFullYear(), month = viewDate.getMonth();
+  const monthName = viewDate.toLocaleDateString("en-GB",{month:"long"}).toUpperCase();
+  const firstDay = new Date(year, month, 1);
+  const startOffset = (firstDay.getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const todayKey = new Date().toISOString().slice(0,10);
+  const cells = [];
+  for (let i=0;i<startOffset;i++) cells.push(null);
+  for (let d=1;d<=daysInMonth;d++) cells.push(d);
+  const keyFor = (d) => `${year}-${String(month+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+
+  return (
+    <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{...S.modalBox, maxHeight:"auto"}}>
+        <div style={S.modalHeader}>
+          <span style={S.modalTitle}>Schedule "{tpl.name}"</span>
+          <button style={S.iconBtnSm} onClick={onClose}><Icon name="x" size={20} color="#888"/></button>
+        </div>
+        <div style={{padding:"14px 18px 24px"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+            <span className="block-display" style={{fontSize:22,color:"#E8E8EC"}}>{monthName}</span>
+            <div style={{display:"flex",gap:6}}>
+              <button style={S.calNavBtn} onClick={()=>setViewDate(new Date(year,month-1,1))}>
+                <Icon name="back" size={15} color="#666"/>
+              </button>
+              <button style={S.calNavBtn} onClick={()=>setViewDate(new Date(year,month+1,1))}>
+                <span style={{display:"flex",transform:"rotate(-90deg)"}}><Icon name="chevDown" size={15} color="#666"/></span>
+              </button>
+            </div>
+          </div>
+          <div style={S.calWeekRow}>
+            {["M","T","W","T","F","S","S"].map((d,i)=><div key={i} style={S.calWeekDay}>{d}</div>)}
+          </div>
+          <div style={S.calGrid}>
+            {cells.map((d,i)=>{
+              if (d===null) return <div key={i} style={S.calCell}/>;
+              const key = keyFor(d);
+              const isToday = key === todayKey;
+              return (
+                <button key={i} style={{...S.calCell, cursor:"pointer", background:"none", border:"none"}}
+                  onClick={()=>onConfirm(key)}>
+                  <div style={{...S.calDayNum, ...(isToday?S.calDayToday:{})}}>{d}</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── DAY DETAIL SHEET (tap a calendar day) ───────────────────────────────────
+function DayDetailSheet({ dateKey, sessions, schedule, templates, onClose, onOpenWorkout, onClearSchedule }) {
+  const dateObj = new Date(dateKey + "T00:00:00");
+  const dateLabel = dateObj.toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long"});
+  const session = sessions[dateKey];
+  const scheduledId = schedule[dateKey];
+  const scheduledTpl = scheduledId ? templates.find(t=>t.id===scheduledId) : null;
+  const isCompleted = !!session;
+
+  return (
+    <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{...S.modalBox, maxHeight:"auto"}}>
+        <div style={S.modalHeader}>
+          <span style={S.modalTitle}>{dateLabel}</span>
+          <button style={S.iconBtnSm} onClick={onClose}><Icon name="x" size={20} color="#888"/></button>
+        </div>
+        <div style={{padding:"14px 18px 28px",display:"flex",flexDirection:"column",gap:14}}>
+
+          {isCompleted && (
+            <div style={S.dayDetailCard}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                <span style={S.dayDetailDot}/>
+                <span style={{fontSize:12,fontWeight:800,color:"#C8F03C",letterSpacing:"0.08em"}}>COMPLETED</span>
+              </div>
+              <div style={{fontSize:14,color:"#ccc"}}>
+                {session.names?.length ? session.names.join(", ") : `${session.count} session${session.count!==1?"s":""} logged`}
+              </div>
+            </div>
+          )}
+
+          {scheduledTpl && (
+            <div style={{...S.dayDetailCard, borderStyle:"dashed"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                <span style={S.dayDetailDotOutline}/>
+                <span style={{fontSize:12,fontWeight:800,color:"#999",letterSpacing:"0.08em"}}>SCHEDULED</span>
+              </div>
+              <button style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",background:"none",border:"none",cursor:"pointer",padding:0}}
+                onClick={()=>onOpenWorkout(scheduledTpl)}>
+                <span style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:18}}>{scheduledTpl.emoji}</span>
+                  <span className="block-display" style={{fontSize:16,color:"#E8E8EC"}}>{scheduledTpl.name}</span>
+                </span>
+                <span style={{display:"flex",transform:"rotate(-90deg)"}}><Icon name="chevDown" size={16} color="#555"/></span>
+              </button>
+              <button style={S.dayDetailClearBtn} onClick={onClearSchedule}>Remove from schedule</button>
+            </div>
+          )}
+
+          {!isCompleted && !scheduledTpl && (
+            <div style={{color:"#444",fontSize:13,padding:"20px",textAlign:"center"}}>
+              Nothing logged or scheduled for this day.
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1174,7 +1482,7 @@ const mkEx = (name, mode="reps", setCount=3) => ({
 
 const DEFAULT_TEMPLATES = [
   {
-    id: "tpl1", name: "PUSH DAY", emoji: "💪", tag: "Priority",
+    id: "tpl1", name: "PUSH DAY", emoji: "💪", tags: [{emoji:"⭐️",label:"Priority"},{emoji:"💪",label:"Upper Body"}],
     duration: 36, type: "Upper Body Strength", gradient: ["#1a2a1f","#0d0d0f"],
     workout: {
       warmup: [
@@ -1193,7 +1501,7 @@ const DEFAULT_TEMPLATES = [
     },
   },
   {
-    id: "tpl2", name: "PULL DAY", emoji: "🔥", tag: "Modified",
+    id: "tpl2", name: "PULL DAY", emoji: "🔥", tags: [{emoji:"💪",label:"Upper Body"}],
     duration: 38, type: "Back & Biceps", gradient: ["#1f1a2a","#0d0d0f"],
     workout: {
       warmup: [
@@ -1212,7 +1520,7 @@ const DEFAULT_TEMPLATES = [
     },
   },
   {
-    id: "tpl3", name: "LEG DAY", emoji: "🦵", tag: "Priority",
+    id: "tpl3", name: "LEG DAY", emoji: "🦵", tags: [{emoji:"⭐️",label:"Priority"},{emoji:"🦿",label:"Lower Body"}],
     duration: 42, type: "Lower Body Strength", gradient: ["#1a242a","#0d0d0f"],
     workout: {
       warmup: [
@@ -1231,7 +1539,7 @@ const DEFAULT_TEMPLATES = [
     },
   },
   {
-    id: "tpl4", name: "MOBILITY FLOW", emoji: "🧘", tag: "Recovery",
+    id: "tpl4", name: "MOBILITY FLOW", emoji: "🧘", tags: [{emoji:"😮‍💨",label:"Recovery"},{emoji:"🤸",label:"Stretchy"}],
     duration: 30, type: "Full Body Mobility", gradient: ["#2a1a24","#0d0d0f"],
     workout: {
       warmup: [
@@ -1277,11 +1585,18 @@ function App() {
   const [history,setHistory]         = useState({});
   const [sessions,setSessions]       = useState({});
   const [templates,setTemplates]     = useState(DEFAULT_TEMPLATES);
-  const [activeWorkoutName,setActiveWorkoutName] = useState(null);
+  const [activeWorkoutName,setActiveWorkoutName] = useState("CUSTOM WORKOUT");
   const [activeTemplateId,setActiveTemplateId]   = useState(null);
+  const [workoutTags,setWorkoutTags]   = useState([DEFAULT_TAGS[0]]);
+  const [editingTitle,setEditingTitle] = useState(false);
+  const [showTagPicker,setShowTagPicker] = useState(false);
   const [savedIds,setSavedIds]       = useState([]);
   const [showHistory,setShowHistory] = useState(false);
   const [showCalendar,setShowCalendar] = useState(false);
+  const [activeTagFilter,setActiveTagFilter] = useState(null);
+  const [activeDayDetail,setActiveDayDetail] = useState(null);
+  const [schedulingTpl,setSchedulingTpl] = useState(null);
+  const [schedule,setSchedule] = useState({});
   const [saved,setSaved]             = useState(false);
   const [activeTab,setActiveTab]     = useState("warmup");
 
@@ -1300,6 +1615,7 @@ function App() {
     setSessions(loadSessions());
     setTemplates(loadTemplates());
     setSavedIds(loadSavedIds());
+    setSchedule(loadSchedule());
   },[]);
 
   function toggleSaved(id) {
@@ -1310,18 +1626,25 @@ function App() {
     });
   }
 
+  function scheduleWorkoutForDate(dateKey, templateId) {
+    const next = saveScheduleEntry(dateKey, templateId);
+    setSchedule(next);
+  }
+
   function launchTemplate(tpl) {
     setWorkout(JSON.parse(JSON.stringify(tpl.workout)));
     setActiveWorkoutName(tpl.name);
     setActiveTemplateId(tpl.id);
+    setWorkoutTags(tpl.tags && tpl.tags.length ? tpl.tags : [DEFAULT_TAGS[0]]);
     setActiveTab("warmup");
     setView("workout");
   }
 
   function startBlankWorkout() {
     setWorkout(defaultWorkout());
-    setActiveWorkoutName(null);
+    setActiveWorkoutName("CUSTOM WORKOUT");
     setActiveTemplateId(null);
+    setWorkoutTags([DEFAULT_TAGS[0]]);
     setActiveTab("warmup");
     setView("workout");
   }
@@ -1374,8 +1697,8 @@ function App() {
     startTimer(next, queue);
   }
 
-  function launchTimer() {
-    const q = buildQueue(workout);
+  function launchTimer(workoutOverride) {
+    const q = buildQueue(workoutOverride || workout);
     setQueue(q);
     setTimerActive(true);
     setQueueIdx(0);
@@ -1512,7 +1835,7 @@ function App() {
 
           {/* Calendar module */}
           <div style={S.homeSection}>
-            <CalendarModule sessions={sessions}/>
+            <CalendarModule sessions={sessions} schedule={schedule} templates={templates} onDayTap={setActiveDayDetail}/>
           </div>
 
           {/* Stats strip */}
@@ -1533,6 +1856,15 @@ function App() {
             </div>
           </div>
 
+          {/* Browse by tag */}
+          <div style={{...S.homeSection, paddingLeft:0, paddingRight:0}}>
+            <div style={{...S.homeSectionTitle, padding:"0 18px"}}>
+              <span>BROWSE BY TAG</span>
+              <span className="swipe-hint" style={{color:"#444",fontSize:11}}>swipe →</span>
+            </div>
+            <TagBrowseRow onSelectTag={setActiveTagFilter}/>
+          </div>
+
         </div>
 
         {showHistory&&<HistoryPanel history={history} onClose={()=>setShowHistory(false)}/>}
@@ -1544,10 +1876,42 @@ function App() {
                 <button style={S.iconBtnSm} onClick={()=>setShowCalendar(false)}><Icon name="x" size={20} color="#888"/></button>
               </div>
               <div style={{padding:"8px 16px 0"}}>
-                <CalendarModule sessions={sessions}/>
+                <CalendarModule sessions={sessions} schedule={schedule} templates={templates} onDayTap={setActiveDayDetail}/>
               </div>
             </div>
           </div>
+        )}
+        {activeTagFilter && (
+          <WorkoutsByTagSheet
+            tag={activeTagFilter}
+            templates={templates}
+            onClose={()=>setActiveTagFilter(null)}
+            onOpenWorkout={tpl=>{setActiveTagFilter(null);launchTemplate(tpl);}}
+            onSchedule={tpl=>{setSchedulingTpl(tpl);}}
+            onStart={tpl=>{setActiveTagFilter(null);launchTemplate(tpl);launchTimer(tpl.workout);}}
+          />
+        )}
+        {schedulingTpl && (
+          <ScheduleDatePicker
+            tpl={schedulingTpl}
+            onClose={()=>setSchedulingTpl(null)}
+            onConfirm={(dateKey)=>{
+              scheduleWorkoutForDate(dateKey, schedulingTpl.id);
+              setSchedulingTpl(null);
+              setActiveTagFilter(null);
+            }}
+          />
+        )}
+        {activeDayDetail && (
+          <DayDetailSheet
+            dateKey={activeDayDetail}
+            sessions={sessions}
+            schedule={schedule}
+            templates={templates}
+            onClose={()=>setActiveDayDetail(null)}
+            onOpenWorkout={tpl=>{setActiveDayDetail(null);setShowCalendar(false);launchTemplate(tpl);}}
+            onClearSchedule={()=>{scheduleWorkoutForDate(activeDayDetail,null);setActiveDayDetail(null);}}
+          />
         )}
       </div>
     );
@@ -1597,24 +1961,44 @@ function App() {
             </button>
           </div>
 
-          <div style={S.detailTagRow}>
-            <span style={{...S.detailTagPill,background:"#C8F03C22",color:"#C8F03C"}}>
-              <Icon name="trophy" size={13} color="#C8F03C"/> Priority
+          <button style={S.detailTagRow} onClick={()=>setShowTagPicker(true)}>
+            {workoutTags.map(tag=>{
+              const color = tagColorFor(tag.label);
+              return (
+                <span key={tag.label} style={{...S.detailTagPill,background:color+"22",color}}>
+                  <span style={{fontSize:13}}>{tag.emoji}</span> {tag.label}
+                </span>
+              );
+            })}
+            <span style={S.detailTagAddBtn}>
+              <Icon name="plus" size={12} color="#999"/>
             </span>
-            {activeTemplateId && (
-              <span style={{...S.detailTagPill,background:"#A78BFA22",color:"#A78BFA"}}>
-                <Icon name="refresh" size={13} color="#A78BFA"/> Modified
-              </span>
-            )}
-          </div>
+          </button>
 
           <div style={S.detailDuration}>
             <Icon name="timer" size={16} color="#aaa"/> {estDuration || 30} min
           </div>
 
-          <div className="block-display" style={{fontSize:34,color:"#fff",textAlign:"center",position:"relative",zIndex:2,display:"flex",alignItems:"center",justifyContent:"center",gap:10}}>
-            {activeWorkoutName || "CUSTOM WORKOUT"} <span style={{fontSize:24}}>⚡</span>
-          </div>
+          {editingTitle ? (
+            <input
+              autoFocus
+              className="block-display"
+              style={S.detailTitleInput}
+              value={activeWorkoutName}
+              onChange={e=>setActiveWorkoutName(e.target.value.toUpperCase())}
+              onBlur={()=>setEditingTitle(false)}
+              onKeyDown={e=>{ if(e.key==="Enter") setEditingTitle(false); }}
+            />
+          ) : (
+            <button
+              className="block-display"
+              style={S.detailTitleBtn}
+              onClick={()=>setEditingTitle(true)}
+            >
+              {activeWorkoutName || "CUSTOM WORKOUT"} <span style={{fontSize:24}}>⚡</span>
+              <Icon name="edit" size={14} color="rgba(255,255,255,0.4)"/>
+            </button>
+          )}
 
           <div style={{display:"flex",justifyContent:"center",marginTop:14,position:"relative",zIndex:2}}>
             <span style={S.detailEquipPill}>Dumbbells &amp; Barbell</span>
@@ -1728,6 +2112,13 @@ function App() {
       </div>
 
       {showHistory&&<HistoryPanel history={history} onClose={()=>setShowHistory(false)}/>}
+      {showTagPicker&&(
+        <TagPicker
+          selectedTags={workoutTags}
+          onChange={setWorkoutTags}
+          onClose={()=>setShowTagPicker(false)}
+        />
+      )}
       {showCalendar&&(
         <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&setShowCalendar(false)}>
           <div style={{...S.modalBox,maxHeight:"auto",padding:"4px 4px 24px"}}>
@@ -1736,10 +2127,21 @@ function App() {
               <button style={S.iconBtnSm} onClick={()=>setShowCalendar(false)}><Icon name="x" size={20} color="#888"/></button>
             </div>
             <div style={{padding:"8px 16px 0"}}>
-              <CalendarModule sessions={sessions}/>
+              <CalendarModule sessions={sessions} schedule={schedule} templates={templates} onDayTap={setActiveDayDetail}/>
             </div>
           </div>
         </div>
+      )}
+      {activeDayDetail && (
+        <DayDetailSheet
+          dateKey={activeDayDetail}
+          sessions={sessions}
+          schedule={schedule}
+          templates={templates}
+          onClose={()=>setActiveDayDetail(null)}
+          onOpenWorkout={tpl=>{setActiveDayDetail(null);setShowCalendar(false);launchTemplate(tpl);}}
+          onClearSchedule={()=>{scheduleWorkoutForDate(activeDayDetail,null);setActiveDayDetail(null);}}
+        />
       )}
     </div>
   );
@@ -1805,6 +2207,8 @@ const S = {
   customTag:    { fontSize:9, fontWeight:800, color:"#777", background:"#1c1c22", padding:"2px 6px", borderRadius:5, letterSpacing:"0.05em", textTransform:"uppercase" },
   addExerciseRow: { display:"flex", alignItems:"center", gap:10, padding:"13px 13px", borderRadius:10, background:"#FFB80012", border:"1px dashed #FFB80055", cursor:"pointer", textAlign:"left", marginTop:6, position:"sticky", bottom:0 },
   addExerciseIcon: { width:26, height:26, borderRadius:7, background:"#FFB800", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 },
+  tagPickerItem: { display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 13px", borderRadius:10, background:"#0e0e12", border:"1px solid #1c1c22", cursor:"pointer", textAlign:"left" },
+  tagCheckbox:   { width:22, height:22, borderRadius:6, flexShrink:0, background:"#1a1a1f", border:"1px solid #252530", display:"flex", alignItems:"center", justifyContent:"center" },
   historyItem:{ background:"#0e0e12",borderRadius:12,border:"1px solid #1c1c22",padding:"14px" },
   timePill:   { padding:"6px 10px",borderRadius:8,background:"#1a1a1f",border:"1px solid #252530",color:"#666",fontSize:12,fontWeight:700,cursor:"pointer",flexShrink:0 },
   timePillActive:{ background:"#C8F03C1a",border:"1px solid #C8F03C",color:"#C8F03C" },
@@ -1822,10 +2226,12 @@ const S = {
   calWeekDay: { textAlign:"center", fontSize:12, fontWeight:800, color:"#fff" },
   calGrid: { display:"grid", gridTemplateColumns:"repeat(7,1fr)", rowGap:10 },
   calCell: { display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:40, position:"relative" },
+  calCellBtn: { display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:40, position:"relative", background:"none", border:"none", cursor:"pointer", padding:0 },
   calDayNum: { fontSize:15, fontWeight:600, color:"#6a6a72", width:32, height:32, display:"flex", alignItems:"center", justifyContent:"center", borderRadius:"50%" },
   calDayToday: { color:"#fff", border:"2px solid #C8F03C", fontWeight:800 },
   calDayLogged: { color:"#E8E8EC" },
   calDot: { width:4, height:4, borderRadius:"50%", marginTop:2, position:"absolute", bottom:2 },
+  calDotScheduled: { width:6, height:6, borderRadius:"50%", marginTop:2, position:"absolute", bottom:1, border:"1.3px dashed #999", background:"transparent" },
 
   // Home screen
   homeHeader: { display:"flex", alignItems:"center", justifyContent:"space-between", padding:"16px 18px 6px", flexShrink:0 },
@@ -1835,6 +2241,13 @@ const S = {
   homeSectionTitle: { fontSize:11, fontWeight:800, letterSpacing:"0.14em", color:"#555", marginBottom:12, display:"flex", alignItems:"center", justifyContent:"space-between" },
   homeNavTab: { display:"flex", alignItems:"center", gap:6, padding:"9px 14px", borderRadius:20, background:"#111115", border:"1px solid #1c1c22", fontSize:13, fontWeight:700, color:"#999", cursor:"pointer", flexShrink:0 },
   homeNavTabActive: { background:"#C8F03C", border:"1px solid #C8F03C", color:"#0D0D0F" },
+  tagBrowseChip: { display:"flex", alignItems:"center", gap:7, padding:"10px 16px", borderRadius:20, border:"1px solid", cursor:"pointer", flexShrink:0, whiteSpace:"nowrap" },
+  tagSheetItem: { display:"flex", alignItems:"center", gap:10, padding:"13px", borderRadius:12, background:"#0e0e12", border:"1px solid" },
+  tagSheetIconBtn: { width:34, height:34, borderRadius:9, background:"#1a1a1f", border:"1px solid #252530", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer" },
+  dayDetailCard: { background:"#0e0e12", border:"1px solid #1c1c22", borderRadius:14, padding:"14px" },
+  dayDetailDot: { width:9, height:9, borderRadius:"50%", background:"#C8F03C" },
+  dayDetailDotOutline: { width:9, height:9, borderRadius:"50%", border:"1.5px dashed #888" },
+  dayDetailClearBtn: { marginTop:12, fontSize:12, color:"#666", background:"none", border:"none", cursor:"pointer", textDecoration:"underline" },
 
   // Carousel cards
   workoutCard: { width:268, height:340, borderRadius:20, position:"relative", overflow:"hidden", border:"1px solid #1f1f26", cursor:"pointer", padding:14, display:"flex", flexDirection:"column", justifyContent:"space-between" },
@@ -1856,8 +2269,11 @@ const S = {
   detailHero:      { position:"relative", padding:"54px 18px 22px", overflow:"hidden" },
   detailHeroBg:    { position:"absolute", inset:0, zIndex:0 },
   detailCloseBtn:  { width:38, height:38, borderRadius:"50%", background:"rgba(0,0,0,0.5)", border:"1px solid rgba(255,255,255,0.1)", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", zIndex:2 },
-  detailTagRow:    { display:"flex", gap:8, justifyContent:"center", marginBottom:16, position:"relative", zIndex:2, flexWrap:"wrap" },
+  detailTagRow:    { display:"flex", gap:8, justifyContent:"center", marginBottom:16, position:"relative", zIndex:2, flexWrap:"wrap", background:"none", border:"none", padding:0, cursor:"pointer", width:"100%", alignItems:"center" },
   detailTagPill:   { display:"flex", alignItems:"center", gap:6, fontSize:13, fontWeight:700, padding:"7px 14px", borderRadius:18 },
+  detailTagAddBtn: { display:"flex", alignItems:"center", justifyContent:"center", width:28, height:28, borderRadius:"50%", background:"rgba(255,255,255,0.08)", border:"1px dashed rgba(255,255,255,0.25)" },
+  detailTitleBtn:  { background:"none", border:"none", cursor:"pointer", fontSize:34, color:"#fff", textAlign:"center", position:"relative", zIndex:2, display:"flex", alignItems:"center", justifyContent:"center", gap:10, width:"100%", padding:0 },
+  detailTitleInput:{ background:"rgba(255,255,255,0.08)", border:"1px dashed rgba(255,255,255,0.3)", borderRadius:12, fontSize:30, color:"#fff", textAlign:"center", position:"relative", zIndex:2, width:"100%", padding:"8px 16px", outline:"none" },
   detailDuration:  { display:"flex", alignItems:"center", justifyContent:"center", gap:7, fontSize:15, fontWeight:600, color:"#E8E8EC", marginBottom:8, position:"relative", zIndex:2 },
   detailEquipPill: { display:"inline-flex", fontSize:13, fontWeight:600, color:"#ccc", background:"rgba(255,255,255,0.08)", padding:"6px 16px", borderRadius:14, border:"1px solid rgba(255,255,255,0.1)" },
   detailActionRow: { display:"flex", justifyContent:"space-around", padding:"22px 18px 8px", position:"relative", zIndex:2 },
