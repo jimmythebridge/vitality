@@ -18,6 +18,10 @@
   input[type=number]::-webkit-inner-spin-button,
   input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
   input[type=number] { -moz-appearance: textfield; }
+  /* iOS Safari auto-zooms on focus if an input's font-size is under 16px.
+     This sets a 16px floor only on inputs that don't already specify a larger
+     size inline (inline styles always win over this class, so it's a safe default). */
+  input, textarea, select { font-size: 16px; }
   ::-webkit-scrollbar { width: 0; }
   button { font-family: inherit; }
   * { -webkit-tap-highlight-color: transparent; }
@@ -176,6 +180,22 @@ function loadTemplates()  {
 const SAVED_IDS_KEY = "vitality_saved_ids_v1";
 function saveSavedIds(ids) { try { localStorage.setItem(SAVED_IDS_KEY, JSON.stringify(ids)); } catch {} }
 function loadSavedIds()    { try { const r = localStorage.getItem(SAVED_IDS_KEY); return r ? JSON.parse(r) : []; } catch { return []; } }
+
+// Custom user-added exercises, keyed by library type (warmup/strength/core/cooldown)
+const CUSTOM_EX_KEY = "vitality_custom_exercises_v1";
+function loadCustomExercises() {
+  try { const r = localStorage.getItem(CUSTOM_EX_KEY); return r ? JSON.parse(r) : {warmup:[],strength:[],core:[],cooldown:[]}; }
+  catch { return {warmup:[],strength:[],core:[],cooldown:[]}; }
+}
+function addCustomExercise(type, name) {
+  const all = loadCustomExercises();
+  if (!all[type]) all[type] = [];
+  if (!all[type].some(e=>e.toLowerCase()===name.toLowerCase())) {
+    all[type] = [...all[type], name];
+    try { localStorage.setItem(CUSTOM_EX_KEY, JSON.stringify(all)); } catch {}
+  }
+  return all;
+}
 
 function calcStats(logs) {
   if (!logs?.length) return null;
@@ -557,28 +577,49 @@ function TimerScreen({ step, secondsLeft, totalSeconds, running, onPlayPause, on
 // ─── EXERCISE PICKER ─────────────────────────────────────────────────────────
 function ExercisePicker({ type, onSelect, onClose, history }) {
   const [search, setSearch] = useState("");
+  const [customEx, setCustomEx] = useState({});
+  const [justAdded, setJustAdded] = useState(null);
   const inputRef = useRef(null);
-  useEffect(()=>{ setTimeout(()=>inputRef.current?.focus(),100); },[]);
-  const list = EXERCISE_LIBRARY[type] || [];
-  const filtered = list.filter(e=>e.toLowerCase().includes(search.toLowerCase()));
+  useEffect(()=>{ setTimeout(()=>inputRef.current?.focus(),100); setCustomEx(loadCustomExercises()); },[]);
+
+  const baseList   = EXERCISE_LIBRARY[type] || [];
+  const customList = customEx[type] || [];
+  const fullList   = [...baseList, ...customList];
+  const filtered   = fullList.filter(e=>e.toLowerCase().includes(search.toLowerCase()));
+
+  const trimmedSearch = search.trim();
+  const exactMatch = fullList.some(e=>e.toLowerCase()===trimmedSearch.toLowerCase());
+  const showAddRow = trimmedSearch.length > 0 && !exactMatch;
+
+  function handleAddNew() {
+    if (!trimmedSearch) return;
+    addCustomExercise(type, trimmedSearch);
+    setJustAdded(trimmedSearch);
+    onSelect(trimmedSearch);
+    onClose();
+  }
 
   return (
     <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div style={S.modalBox}>
+      <div style={S.pickerBox}>
         <div style={S.modalHeader}>
           <span style={S.modalTitle}>Select Exercise</span>
           <button style={S.iconBtnSm} onClick={onClose}><Icon name="x" size={20} color="#888"/></button>
         </div>
-        <div style={{padding:"10px 16px 0"}}>
-          <input ref={inputRef} style={S.searchInput} placeholder="Search…"
+        <div style={S.pickerSearchWrap}>
+          <input ref={inputRef} style={S.searchInput} placeholder="Search or type to add new…"
             value={search} onChange={e=>setSearch(e.target.value)}/>
         </div>
         <div style={S.exerciseList}>
           {filtered.map(ex=>{
             const stats=calcStats(history[ex]);
+            const isCustom = customList.includes(ex);
             return (
               <button key={ex} style={S.exerciseItem} onClick={()=>{onSelect(ex);onClose();}}>
-                <span style={{fontSize:14,fontWeight:600,color:"#E8E8EC"}}>{ex}</span>
+                <span style={{display:"flex",alignItems:"center",gap:7}}>
+                  <span style={{fontSize:14,fontWeight:600,color:"#E8E8EC"}}>{ex}</span>
+                  {isCustom && <span style={S.customTag}>custom</span>}
+                </span>
                 {stats&&(
                   <span style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
                     <span style={{display:"flex",alignItems:"center",gap:3,fontSize:11,fontWeight:700,color:"#FFB800"}}>
@@ -590,6 +631,21 @@ function ExercisePicker({ type, onSelect, onClose, history }) {
               </button>
             );
           })}
+
+          {filtered.length===0 && !showAddRow && (
+            <div style={{color:"#444",fontSize:13,padding:"20px",textAlign:"center"}}>No exercises found</div>
+          )}
+
+          {showAddRow && (
+            <button style={S.addExerciseRow} onClick={handleAddNew}>
+              <span style={S.addExerciseIcon}>
+                <Icon name="plus" size={15} color="#0D0D0F"/>
+              </span>
+              <span style={{fontSize:14,fontWeight:700,color:"#FFB800"}}>
+                Add "{trimmedSearch}"
+              </span>
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -1731,7 +1787,7 @@ const S = {
   doneBtn:    { width:32,height:32,borderRadius:8,flexShrink:0,background:"#111115",border:"1px solid #1c1c22",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer" },
   doneBtnActive:{ background:"#C8F03C",border:"1px solid #C8F03C" },
   noteToggle: { display:"flex",alignItems:"center",gap:5,background:"none",border:"none",cursor:"pointer",padding:"5px 0 2px" },
-  noteInput:  { width:"100%",background:"#111115",border:"1px solid #1c1c22",borderRadius:8,padding:"8px 10px",color:"#999",fontSize:13,outline:"none",resize:"none",fontFamily:"'Inter',sans-serif",marginTop:4 },
+  noteInput:  { width:"100%",background:"#111115",border:"1px solid #1c1c22",borderRadius:8,padding:"8px 10px",color:"#999",fontSize:16,outline:"none",resize:"none",fontFamily:"'Inter',sans-serif",marginTop:4 },
   nextBtn:    { width:"100%",display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginTop:16,padding:"14px",background:"#FF6B35",border:"none",borderRadius:11,color:"#0D0D0F",fontSize:14,fontWeight:900,cursor:"pointer",letterSpacing:"0.05em" },
   saveBtn:    { flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"14px 20px",borderRadius:11,background:"#C8F03C",border:"none",color:"#0D0D0F",fontSize:14,fontWeight:900,cursor:"pointer",letterSpacing:"0.05em",transition:"background 0.2s" },
   saveBtnDone:{ background:"#00C853" },
@@ -1739,11 +1795,16 @@ const S = {
   completionCard:{ marginTop:24,padding:"28px 20px 20px",background:"#0f0f13",border:"1px solid #1c1c22",borderRadius:16,textAlign:"center",display:"flex",flexDirection:"column",alignItems:"center" },
   overlay:    { position:"fixed",inset:0,background:"rgba(0,0,0,0.88)",zIndex:200,display:"flex",alignItems:"flex-end" },
   modalBox:   { background:"#111115",borderRadius:"20px 20px 0 0",width:"100%",maxHeight:"80vh",display:"flex",flexDirection:"column",border:"1px solid #1e1e26",borderBottom:"none",maxWidth:480,margin:"0 auto" },
+  pickerBox:  { background:"#111115",borderRadius:"20px 20px 0 0",width:"100%",height:"80vh",display:"flex",flexDirection:"column",border:"1px solid #1e1e26",borderBottom:"none",maxWidth:480,margin:"0 auto",overflow:"hidden" },
+  pickerSearchWrap: { padding:"10px 16px 8px", flexShrink:0 },
   modalHeader:{ display:"flex",alignItems:"center",justifyContent:"space-between",padding:"16px 20px 12px",borderBottom:"1px solid #1a1a1f",flexShrink:0 },
   modalTitle: { fontSize:16,fontWeight:800,color:"#E8E8EC" },
-  searchInput:{ width:"100%",background:"#1a1a1f",border:"1px solid #252530",borderRadius:10,padding:"10px 14px",color:"#E8E8EC",fontSize:14,outline:"none",fontFamily:"'Inter',sans-serif" },
-  exerciseList:{ overflowY:"auto",padding:"8px 16px 24px",display:"flex",flexDirection:"column",gap:4,flex:1 },
+  searchInput:{ width:"100%",background:"#1a1a1f",border:"1px solid #252530",borderRadius:10,padding:"10px 14px",color:"#E8E8EC",fontSize:16,outline:"none",fontFamily:"'Inter',sans-serif" },
+  exerciseList:{ overflowY:"auto",padding:"8px 16px 24px",display:"flex",flexDirection:"column",gap:4,flex:1,minHeight:0 },
   exerciseItem:{ display:"flex",alignItems:"center",justifyContent:"space-between",padding:"11px 13px",borderRadius:10,background:"#0e0e12",border:"1px solid #1c1c22",cursor:"pointer",textAlign:"left" },
+  customTag:    { fontSize:9, fontWeight:800, color:"#777", background:"#1c1c22", padding:"2px 6px", borderRadius:5, letterSpacing:"0.05em", textTransform:"uppercase" },
+  addExerciseRow: { display:"flex", alignItems:"center", gap:10, padding:"13px 13px", borderRadius:10, background:"#FFB80012", border:"1px dashed #FFB80055", cursor:"pointer", textAlign:"left", marginTop:6, position:"sticky", bottom:0 },
+  addExerciseIcon: { width:26, height:26, borderRadius:7, background:"#FFB800", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 },
   historyItem:{ background:"#0e0e12",borderRadius:12,border:"1px solid #1c1c22",padding:"14px" },
   timePill:   { padding:"6px 10px",borderRadius:8,background:"#1a1a1f",border:"1px solid #252530",color:"#666",fontSize:12,fontWeight:700,cursor:"pointer",flexShrink:0 },
   timePillActive:{ background:"#C8F03C1a",border:"1px solid #C8F03C",color:"#C8F03C" },
