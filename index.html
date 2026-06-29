@@ -95,6 +95,15 @@
 <script type="text/babel">
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
+// Mounts children directly onto document.body. Required for any fixed-position
+// overlay (modals, pickers, sheets) that might be rendered inside a transformed
+// ancestor (e.g. a swipe-to-delete row) — without this, `position:fixed`
+// resolves relative to that ancestor instead of the viewport, trapping the
+// overlay inside a tiny box instead of covering the screen.
+function Portal({ children }) {
+  return ReactDOM.createPortal(children, document.body);
+}
+
 // ─── EXERCISE LIBRARY ────────────────────────────────────────────────────────
 const EXERCISE_LIBRARY = {
   warmup: [
@@ -244,11 +253,17 @@ function calcStats(logs) {
   if (!logs?.length) return null;
   const weights = logs.map(l => parseFloat(l.weight)).filter(w => !isNaN(w) && w > 0);
   if (!weights.length) return null;
+  // Find the log entry with the max weight to estimate 1RM from its rep count (Epley formula)
+  let bestLog = logs[0], bestW = 0;
+  logs.forEach(l => { const w = parseFloat(l.weight); if (!isNaN(w) && w > bestW) { bestW = w; bestLog = l; } });
+  const bestReps = parseFloat(bestLog.reps) || 1;
+  const estOneRM = bestReps > 1 ? Math.round(bestW * (1 + bestReps/30)) : bestW;
   return {
     pb:         Math.max(...weights),
     avg:        Math.round((weights.reduce((a,b)=>a+b,0)/weights.length)*10)/10,
     lastWeight: weights[weights.length-1],
     logCount:   logs.length,
+    estOneRM,
   };
 }
 
@@ -280,7 +295,7 @@ function buildQueue(workout) {
   workout.warmup.forEach((item, i) => {
     const t = defaultTimings(item.name);
     const nextLabel = workout.warmup[i+1]?.name || (workout.supersets[0] ? "Major lift" : "Strength work");
-    steps.push({ id: id++, phase:"warmup", type:"work", label: item.name, subLabel:"Warm-up", exerciseKey:`warmup-${i}`, setIndex:0, work:t.work, rest:t.rest });
+    steps.push({ id: id++, phase:"warmup", type:"work", label: item.name, subLabel:"Warm-up", exerciseKey:`warmup-${i}`, setIndex:0, targetReps:1, work:t.work, rest:t.rest });
     steps.push({ id: id++, phase:"warmup", type:"rest", label:"Rest",      subLabel:`Next: ${nextLabel}`, exerciseKey:`warmup-${i}`, setIndex:0, work:t.work, rest:t.rest });
   });
 
@@ -291,7 +306,9 @@ function buildQueue(workout) {
     const rLabel = roleLabel[ss.role] || `Superset ${si+1}`;
     for (let setIdx = 0; setIdx < totalSets; setIdx++) {
       ss.exercises.forEach((ex, ei) => {
+        const setData = ex.sets[setIdx] || {};
         const t = ex.timings || defaultTimings(ex.name);
+        const workTime = setData.targetTime || t.work;
         const isLastExInSet   = ei === ss.exercises.length - 1;
         const isLastSetOfSS   = setIdx === totalSets - 1;
         const nextLabel = !isLastExInSet
@@ -307,8 +324,8 @@ function buildQueue(workout) {
           exerciseKey: `ss${si}-ex${ei}`,
           setIndex: setIdx,
           ssIndex: si, exIndex: ei,
-          exMode: ex.mode || "reps",
-          work: t.work, rest: t.rest,
+          targetReps: setData.targetReps,
+          work: workTime, rest: t.rest,
         });
         steps.push({
           id: id++, phase:"strength", type:"rest",
@@ -317,7 +334,7 @@ function buildQueue(workout) {
           exerciseKey: `ss${si}-ex${ei}`,
           setIndex: setIdx,
           ssIndex: si, exIndex: ei,
-          work: t.work, rest: t.rest,
+          work: workTime, rest: t.rest,
           isLastExInSet, isLastSetOfSS,
         });
       });
@@ -330,6 +347,8 @@ function buildQueue(workout) {
     const t = ex.timings || defaultTimings(ex.name);
     const totalSets = ex.sets?.length || 3;
     for (let setIdx = 0; setIdx < totalSets; setIdx++) {
+      const setData = ex.sets[setIdx] || {};
+      const workTime = setData.targetTime || t.work;
       const isLast = ci === (coreList.length - 1) && setIdx === totalSets - 1;
       steps.push({
         id: id++, phase:"core", type:"work",
@@ -337,8 +356,8 @@ function buildQueue(workout) {
         subLabel: `Core circuit · Round ${setIdx+1}/${totalSets}`,
         exerciseKey: `core${ci}`,
         setIndex: setIdx, coreIndex: ci,
-        exMode: ex.mode || "reps",
-        work: t.work, rest: t.rest,
+        targetReps: setData.targetReps,
+        work: workTime, rest: t.rest,
       });
       steps.push({
         id: id++, phase:"core", type:"rest",
@@ -346,7 +365,7 @@ function buildQueue(workout) {
         subLabel: isLast ? "Next: Cool down" : `Next: ${coreList[(ci+1)%coreList.length]?.name}`,
         exerciseKey: `core${ci}`,
         setIndex: setIdx, coreIndex: ci,
-        work: t.work, rest: t.rest,
+        work: workTime, rest: t.rest,
       });
     }
   });
@@ -354,7 +373,7 @@ function buildQueue(workout) {
   // Cooldown
   workout.cooldown.forEach((item, i) => {
     const t = defaultTimings(item.name);
-    steps.push({ id: id++, phase:"cooldown", type:"work", label: item.name, subLabel:"Cool-down stretch", exerciseKey:`cd-${i}`, setIndex:0, work:t.work, rest:t.rest });
+    steps.push({ id: id++, phase:"cooldown", type:"work", label: item.name, subLabel:"Cool-down stretch", exerciseKey:`cd-${i}`, setIndex:0, targetReps:1, work:t.work, rest:t.rest });
     if (i < workout.cooldown.length - 1) {
       steps.push({ id: id++, phase:"cooldown", type:"rest", label:"Rest", subLabel:`Next: ${workout.cooldown[i+1]?.name}`, exerciseKey:`cd-${i}`, setIndex:0, work:t.work, rest:t.rest });
     }
@@ -455,14 +474,20 @@ function TimerRing({ seconds, total, phase }) {
 }
 
 // ─── TIMER SCREEN ─────────────────────────────────────────────────────────────
-function TimerScreen({ step, secondsLeft, totalSeconds, running, onPlayPause, onSkip, onAddTime, workout, onLogSet, onLogCoreSet, onExit }) {
+function TimerScreen({ step, secondsLeft, totalSeconds, running, onPlayPause, onSkip, onAddTime, workout, onLogSet, onLogCoreSet, onLogSimple, onExit }) {
   const isWork = step.type === "work";
   const isRest = step.type === "rest";
   const isStrength = step.phase === "strength";
+  const isCore = step.phase === "core";
+  const isSimple = step.phase === "warmup" || step.phase === "cooldown";
 
-  // For strength work steps, get the current set data
-  const [weight, setWeight] = useState("");
+  // Reps default to the suggested target (shown grey) until the user overrides it.
   const [reps, setReps]     = useState("");
+  const [weight, setWeight] = useState("");
+  const repsHasValue = reps !== "";
+
+  // Reset local inputs whenever we land on a new work step
+  useEffect(() => { setReps(""); setWeight(""); }, [step.id]);
 
   const phaseColor = {
     warmup:   "#FF6B35",
@@ -471,14 +496,16 @@ function TimerScreen({ step, secondsLeft, totalSeconds, running, onPlayPause, on
     cooldown: "#A78BFA",
   }[step.phase] || "#C8F03C";
 
-  const isCore = step.phase === "core";
-
   const handleDone = () => {
+    const repsToLog = repsHasValue ? reps : (step.targetReps ?? "");
     if (isStrength && isWork && step.ssIndex !== undefined) {
-      onLogSet(step.ssIndex, step.exIndex, step.setIndex, { weight, reps });
+      onLogSet(step.ssIndex, step.exIndex, step.setIndex, { weight, reps: repsToLog });
     }
     if (isCore && isWork && step.coreIndex !== undefined) {
-      onLogCoreSet(step.coreIndex, step.setIndex, { weight, reps });
+      onLogCoreSet(step.coreIndex, step.setIndex, { weight, reps: repsToLog });
+    }
+    if (isSimple && isWork && onLogSimple) {
+      onLogSimple(step.exerciseKey, repsToLog);
     }
     onSkip();
   };
@@ -526,47 +553,45 @@ function TimerScreen({ step, secondsLeft, totalSeconds, running, onPlayPause, on
       {/* Ring */}
       <TimerRing seconds={secondsLeft} total={totalSeconds} phase={step.type}/>
 
-      {/* Log inputs — strength sets always; core only when the exercise is reps-based */}
-      {((isStrength && isWork) || (isCore && isWork && step.exMode!=="time")) && (
+      {/* Log inputs — every work step gets a rep field; strength/core also get weight */}
+      {isWork && (
         <div style={{
           display:"flex", alignItems:"center", gap:12,
           marginTop:24, width:"100%",
         }}>
-          <div style={S.logInputWrap}>
-            <span style={S.logInputLabel}>KG</span>
-            <input
-              style={S.logInput}
-              type="number" inputMode="decimal"
-              placeholder="—"
-              value={weight}
-              onChange={e=>setWeight(e.target.value)}
-            />
-          </div>
-          <div style={{ fontSize:22, color:"#252530", fontWeight:300 }}>×</div>
+          {(isStrength || isCore) && (
+            <>
+              <div style={S.logInputWrap}>
+                <span style={S.logInputLabel}>KG</span>
+                <input
+                  style={S.logInput}
+                  type="number" inputMode="decimal"
+                  placeholder="—"
+                  value={weight}
+                  onChange={e=>setWeight(e.target.value)}
+                />
+              </div>
+              <div style={{ fontSize:22, color:"#252530", fontWeight:300 }}>×</div>
+            </>
+          )}
           <div style={S.logInputWrap}>
             <span style={S.logInputLabel}>REPS</span>
             <input
-              style={S.logInput}
+              style={{...S.logInput, color: repsHasValue ? "#E8E8EC" : "#555"}}
               type="number" inputMode="numeric"
-              placeholder="—"
-              value={reps}
+              placeholder={String(step.targetReps ?? "—")}
+              value={repsHasValue ? reps : (step.targetReps ?? "")}
+              onFocus={e=>{ if(!repsHasValue) e.target.select(); }}
               onChange={e=>setReps(e.target.value)}
             />
           </div>
         </div>
       )}
 
-      {/* Core, time-mode: show a simple "hold steady" prompt instead of inputs */}
-      {isCore && isWork && step.exMode==="time" && (
-        <div style={{marginTop:24, textAlign:"center"}}>
-          <div style={{fontSize:13, color:"#777", fontWeight:600}}>Hold steady — no logging needed</div>
-        </div>
-      )}
-
       {/* Controls */}
       <div style={{
         display:"flex", alignItems:"center", gap:16,
-        marginTop: (isStrength || isCore) && isWork ? 20 : 32,
+        marginTop: isWork ? 20 : 32,
         width:"100%",
       }}>
         {/* +30s */}
@@ -644,6 +669,7 @@ function ExercisePicker({ type, onSelect, onClose, history }) {
   }
 
   return (
+    <Portal>
     <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div style={S.pickerBox}>
         <div style={S.modalHeader}>
@@ -693,6 +719,7 @@ function ExercisePicker({ type, onSelect, onClose, history }) {
         </div>
       </div>
     </div>
+    </Portal>
   );
 }
 
@@ -730,6 +757,7 @@ function TagPicker({ selectedTags, onChange, onClose }) {
   }
 
   return (
+    <Portal>
     <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div style={S.pickerBox}>
         <div style={S.modalHeader}>
@@ -780,6 +808,7 @@ function TagPicker({ selectedTags, onChange, onClose }) {
         </div>
       </div>
     </div>
+    </Portal>
   );
 }
 
@@ -788,6 +817,7 @@ function TimingEditor({ work, rest, onChange, onClose }) {
   const [w, setW] = useState(work);
   const [r, setR] = useState(rest);
   return (
+    <Portal>
     <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div style={{...S.modalBox, maxHeight:"auto"}}>
         <div style={S.modalHeader}>
@@ -817,27 +847,53 @@ function TimingEditor({ work, rest, onChange, onClose }) {
         </div>
       </div>
     </div>
+    </Portal>
   );
 }
 
 // ─── SET ROW ─────────────────────────────────────────────────────────────────
+// A single editable chip: shows a grey suggested value until the user types
+// their own, which then commits and renders in white.
+function SuggestChip({ value, suggested, onChange, unit, color="#E8E8EC", type="number" }) {
+  const hasValue = value !== "" && value !== null && value !== undefined;
+  return (
+    <input
+      style={{...S.chipInput, color: hasValue ? color : "#666"}}
+      type={type} inputMode={type==="number" ? "decimal" : "text"}
+      value={hasValue ? value : (suggested ?? "")}
+      onFocus={e=>{ if(!hasValue) e.target.select(); }}
+      onChange={e=>onChange(e.target.value)}
+      placeholder={String(suggested ?? "—")}
+    />
+  );
+}
+
 function SetRow({ setNum, data, onChange, pb }) {
-  const isPB = data.weight&&parseFloat(data.weight)>0&&pb&&parseFloat(data.weight)>=pb;
+  const isPB = data.loggedWeight && parseFloat(data.loggedWeight)>0 && pb && parseFloat(data.loggedWeight)>=pb;
   return (
     <div style={{...S.setRow,...(data.done?S.setRowDone:{}),...(isPB?S.setRowPB:{})}}>
       <div style={S.setNum}>{setNum}</div>
-      <div style={{flex:1,display:"flex",alignItems:"center",gap:7}}>
-        <div style={S.inputWrap}>
-          <span style={S.inputLabel}>KG</span>
-          <input style={S.setInput} type="number" inputMode="decimal" placeholder="—"
-            value={data.weight} onChange={e=>onChange({...data,weight:e.target.value})}/>
-          {isPB&&<span style={S.pbBadge}>PB!</span>}
+      <div style={S.setChipGrid}>
+        <div style={S.chipWrap}>
+          <span style={S.inputLabel}>TIME</span>
+          <SuggestChip value={data.loggedTime} suggested={`${data.targetTime}s`}
+            onChange={v=>onChange({...data,loggedTime:v})} color="#60A5FA"/>
         </div>
-        <span style={{fontSize:18,color:"#252530",fontWeight:300,flexShrink:0}}>×</span>
-        <div style={S.inputWrap}>
+        <div style={S.chipWrap}>
+          <span style={S.inputLabel}>EFFORT</span>
+          <SuggestChip value={data.effort} suggested="—"
+            onChange={v=>onChange({...data,effort:v})} color="#FFB800"/>
+        </div>
+        <div style={S.chipWrap}>
           <span style={S.inputLabel}>REPS</span>
-          <input style={S.setInput} type="number" inputMode="numeric" placeholder="—"
-            value={data.reps} onChange={e=>onChange({...data,reps:e.target.value})}/>
+          <SuggestChip value={data.loggedReps} suggested={data.targetReps}
+            onChange={v=>onChange({...data,loggedReps:v})} color="#E8E8EC"/>
+        </div>
+        <div style={S.chipWrap}>
+          <span style={S.inputLabel}>KG</span>
+          <SuggestChip value={data.loggedWeight} suggested="—"
+            onChange={v=>onChange({...data,loggedWeight:v})} color="#C8F03C"/>
+          {isPB&&<span style={S.pbBadge}>PB!</span>}
         </div>
       </div>
       <button style={{...S.doneBtn,...(data.done?S.doneBtnActive:{})}}
@@ -858,7 +914,8 @@ function ExerciseBlock({ label, exercise, sets, timings, onExerciseChange, onSet
   const timing = timings || defaultTimings(exercise);
   const pickerType = phase==="warmup"?"warmup":phase==="cooldown"?"cooldown":phase==="core"?"core":"strength";
 
-  const addSet    = () => onSetsChange([...sets,{weight:"",reps:"",done:false}]);
+  const lastSet = sets[sets.length-1];
+  const addSet    = () => onSetsChange([...sets, makeSet(lastSet?.targetReps ?? 10, lastSet?.targetTime ?? 40)]);
   const removeSet = () => sets.length>1 && onSetsChange(sets.slice(0,-1));
   const updateSet = (i,v) => { const s=[...sets]; s[i]=v; onSetsChange(s); };
 
@@ -873,12 +930,15 @@ function ExerciseBlock({ label, exercise, sets, timings, onExerciseChange, onSet
       </div>
 
       {stats&&(
-        <div style={S.statsBar}>
-          <span style={S.statItem}><Icon name="trophy" size={12} color="#FFB800"/> PB {stats.pb}kg</span>
-          <span style={{color:"#222",fontSize:12}}>|</span>
-          <span style={S.statItem}><Icon name="history" size={12} color="#888"/> Avg {stats.avg}kg</span>
-          <span style={{color:"#222",fontSize:12}}>|</span>
-          <span style={S.statItem}><Icon name="bolt" size={12} color="#C8F03C"/> Last {stats.lastWeight}kg</span>
+        <div style={S.statsBarLarge}>
+          <div style={S.statsBarRow}>
+            <span style={S.statsBarLabel}>Max Weight:</span>
+            <span style={S.statsBarValue}>{stats.pb}kg</span>
+          </div>
+          <div style={S.statsBarRow}>
+            <span style={S.statsBarLabel}>Est. 1 Rep Max:</span>
+            <span style={S.statsBarValue}>{stats.estOneRM}kg</span>
+          </div>
         </div>
       )}
 
@@ -928,6 +988,93 @@ function ExerciseBlock({ label, exercise, sets, timings, onExerciseChange, onSet
 }
 
 // ─── EXERCISE ICON TILE (stand-in for a photo thumbnail) ─────────────────────
+// ─── SWIPE TO DELETE (Apple-standard gesture) ────────────────────────────────
+// Wraps any row; swipe left reveals a red delete action, matching iOS list behavior.
+function SwipeToDelete({ children, onDelete, disabled=false }) {
+  const [dragX, setDragX] = useState(0);
+  const [revealed, setRevealed] = useState(false);
+  const startX = useRef(0);
+  const dragging = useRef(false);
+  const DELETE_WIDTH = 72;
+
+  function handleTouchStart(e) {
+    if (disabled) return;
+    startX.current = e.touches[0].clientX;
+    dragging.current = true;
+  }
+  function handleTouchMove(e) {
+    if (!dragging.current || disabled) return;
+    const delta = e.touches[0].clientX - startX.current;
+    const base = revealed ? -DELETE_WIDTH : 0;
+    const next = Math.min(0, Math.max(-DELETE_WIDTH - 20, base + delta));
+    setDragX(next);
+  }
+  function handleTouchEnd() {
+    dragging.current = false;
+    if (dragX < -DELETE_WIDTH/2) { setDragX(-DELETE_WIDTH); setRevealed(true); }
+    else { setDragX(0); setRevealed(false); }
+  }
+
+  return (
+    <div style={{ position:"relative", overflow:"hidden" }}>
+      {dragX !== 0 && (
+        <div style={S.swipeDeleteAction}>
+          <button style={S.swipeDeleteBtn} onClick={()=>{ setDragX(0); setRevealed(false); onDelete(); }}>
+            <Icon name="x" size={18} color="#fff"/>
+            <span style={{fontSize:11,fontWeight:800,color:"#fff"}}>Delete</span>
+          </button>
+        </div>
+      )}
+      <div
+        style={{ transform:`translateX(${dragX}px)`, transition: dragging.current ? "none" : "transform 0.2s ease", background:"#0D0D0F" }}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onClick={()=>{ if(revealed){ setDragX(0); setRevealed(false); } }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ─── LONG PRESS PREVIEW (Apple-standard gesture) ─────────────────────────────
+// Wraps a row; holding it shows a quick-peek card without opening the full editor.
+function LongPressable({ children, previewContent, onTap }) {
+  const [showPreview, setShowPreview] = useState(false);
+  const timerRef = useRef(null);
+  const movedRef = useRef(false);
+
+  function start() {
+    movedRef.current = false;
+    timerRef.current = setTimeout(()=>{ if(!movedRef.current) setShowPreview(true); }, 450);
+  }
+  function cancel() { clearTimeout(timerRef.current); }
+  function move() { movedRef.current = true; cancel(); }
+
+  return (
+    <>
+      <div
+        onTouchStart={start} onTouchMove={move} onTouchEnd={cancel}
+        onMouseDown={start} onMouseUp={cancel} onMouseLeave={cancel}
+        onClick={()=>{ if(!showPreview) onTap && onTap(); }}
+      >
+        {children}
+      </div>
+      {showPreview && (
+        <Portal>
+        <div style={S.overlay} onClick={()=>setShowPreview(false)}>
+          <div style={S.previewCard} onClick={e=>e.stopPropagation()}>
+            {previewContent}
+            <button style={S.previewCloseBtn} onClick={()=>setShowPreview(false)}>Close</button>
+          </div>
+        </div>
+        </Portal>
+      )}
+    </>
+  );
+}
+
 function ExerciseTile({ phase }) {
   const color = phase==="warmup" ? "#FF6B35" : phase==="cooldown" ? "#A78BFA" : phase==="core" ? "#FFB800" : "#C8F03C";
   const icon  = phase==="warmup" ? "flame" : phase==="cooldown" ? "refresh" : phase==="core" ? "bolt" : "dumbbell";
@@ -944,84 +1091,107 @@ function ExerciseTile({ phase }) {
 }
 
 // ─── COLLAPSIBLE EXERCISE ROW (single-scroll list style) ─────────────────────
-function ExerciseListRow({ label, exercise, sets, timings, mode, onExerciseChange, onSetsChange, onTimingsChange, history, phase, defaultOpen=false }) {
+function ExerciseListRow({ label, exercise, sets, timings, onExerciseChange, onSetsChange, onTimingsChange, onDelete, history, phase, defaultOpen=false }) {
   const [open, setOpen] = useState(defaultOpen);
-  const timing = timings || defaultTimings(exercise);
   const completedSets = sets.filter(s=>s.done).length;
-  const modeLabel = mode === "time" ? `${timing.work}s hold` : `${timing.work}s work`;
+  const firstSet = sets[0] || {};
+  const repPart = (firstSet.targetReps ?? 0) > 1 ? `${firstSet.targetReps} reps · ` : "";
   const summaryText = sets.length > 1
-    ? `${sets.length}x rounds · ${modeLabel}`
-    : modeLabel;
+    ? `${sets.length}x sets · ${repPart}${firstSet.targetTime ?? 40}s`
+    : `${repPart}${firstSet.targetTime ?? 40}s`;
+  const stats = calcStats(history[exercise]);
+
+  const previewContent = (
+    <div>
+      <div className="block-display" style={{fontSize:18,color:"#E8E8EC",marginBottom:10}}>{exercise || "Exercise"}</div>
+      {stats ? (
+        <div style={{display:"flex",flexDirection:"column",gap:6}}>
+          <div style={S.statsBarRow}><span style={S.statsBarLabel}>Max Weight:</span><span style={S.statsBarValue}>{stats.pb}kg</span></div>
+          <div style={S.statsBarRow}><span style={S.statsBarLabel}>Est. 1 Rep Max:</span><span style={S.statsBarValue}>{stats.estOneRM}kg</span></div>
+          <div style={S.statsBarRow}><span style={S.statsBarLabel}>Last session:</span><span style={{...S.statsBarValue,color:"#999"}}>{stats.lastWeight}kg</span></div>
+        </div>
+      ) : (
+        <div style={{fontSize:13,color:"#666"}}>No history yet for this exercise.</div>
+      )}
+      <div style={{marginTop:12,fontSize:12,color:"#555"}}>{summaryText}</div>
+    </div>
+  );
 
   return (
-    <div style={S.listRowWrap}>
-      <button style={S.listRow} onClick={()=>setOpen(o=>!o)}>
-        <ExerciseTile phase={phase}/>
-        <div style={{flex:1, minWidth:0, textAlign:"left"}}>
-          <div style={{display:"flex",alignItems:"center",gap:6}}>
-            {label && <span style={{fontSize:10,fontWeight:900,color:"#3a3a44",letterSpacing:"0.1em",flexShrink:0}}>{label}</span>}
-            <span style={{fontSize:15,fontWeight:700,color:"#E8E8EC",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
-              {exercise || "Choose exercise"}
+    <SwipeToDelete onDelete={onDelete} disabled={!onDelete}>
+      <div style={S.listRowWrap}>
+        <LongPressable previewContent={previewContent} onTap={()=>setOpen(o=>!o)}>
+          <div style={S.listRow}>
+            <ExerciseTile phase={phase}/>
+            <div style={{flex:1, minWidth:0, textAlign:"left"}}>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                {label && <span style={{fontSize:10,fontWeight:900,color:"#3a3a44",letterSpacing:"0.1em",flexShrink:0}}>{label}</span>}
+                <span style={{fontSize:15,fontWeight:700,color:"#E8E8EC",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                  {exercise || "Choose exercise"}
+                </span>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:6,marginTop:4}}>
+                <span style={S.listRowPill}>{summaryText}</span>
+                {completedSets>0 && (
+                  <span style={{fontSize:11,color:"#C8F03C",fontWeight:700}}>
+                    {completedSets}/{sets.length} done
+                  </span>
+                )}
+              </div>
+            </div>
+            <span style={{display:"flex",transform:open?"rotate(180deg)":"none",transition:"transform 0.2s"}}>
+              <Icon name="chevDown" size={16} color="#555"/>
             </span>
           </div>
-          <div style={{display:"flex",alignItems:"center",gap:6,marginTop:4}}>
-            <span style={S.listRowPill}>{summaryText}</span>
-            {completedSets>0 && (
-              <span style={{fontSize:11,color:"#C8F03C",fontWeight:700}}>
-                {completedSets}/{sets.length} done
-              </span>
-            )}
+        </LongPressable>
+        {open && (
+          <div className="anim-flash" style={{padding:"0 0 12px"}}>
+            <ExerciseBlock
+              label={label || "EXERCISE"}
+              exercise={exercise} sets={sets} timings={timings}
+              onExerciseChange={onExerciseChange}
+              onSetsChange={onSetsChange}
+              onTimingsChange={onTimingsChange}
+              history={history} phase={phase}
+            />
           </div>
-        </div>
-        <span style={{display:"flex",transform:open?"rotate(180deg)":"none",transition:"transform 0.2s"}}>
-          <Icon name="chevDown" size={16} color="#555"/>
-        </span>
-      </button>
-      {open && (
-        <div className="anim-flash" style={{padding:"0 0 12px"}}>
-          <ExerciseBlock
-            label={label || "EXERCISE"}
-            exercise={exercise} sets={sets} timings={timings}
-            onExerciseChange={onExerciseChange}
-            onSetsChange={onSetsChange}
-            onTimingsChange={onTimingsChange}
-            history={history} phase={phase}
-          />
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    </SwipeToDelete>
   );
 }
 
 // ─── COLLAPSIBLE SIMPLE ROW (warmup/cooldown, single-scroll style) ───────────
-function SimpleListRow({ exercise, onExerciseChange, history, phase, done, onToggle, duration=30 }) {
+function SimpleListRow({ exercise, onExerciseChange, onDelete, history, phase, done, onToggle, duration=30 }) {
   const [showPicker, setShowPicker] = useState(false);
   return (
-    <div style={S.listRowWrap}>
-      <div style={S.listRow}>
-        <ExerciseTile phase={phase}/>
-        <button style={{flex:1, minWidth:0, textAlign:"left", background:"none", border:"none", cursor:"pointer", padding:0}}
-          onClick={()=>setShowPicker(true)}>
-          <div style={{
-            fontSize:15, fontWeight:700, color:"#E8E8EC",
-            whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis",
-            ...(done?{textDecoration:"line-through",color:"#555"}:{}),
-          }}>
-            {exercise || "Choose exercise"}
-          </div>
-          <div style={{marginTop:4}}>
-            <span style={S.listRowPill}>{duration} sec</span>
-          </div>
-        </button>
-        <button
-          style={{...S.listRowCheck, ...(done?S.listRowCheckActive:{})}}
-          onClick={onToggle}
-        >
-          <Icon name="check" size={14} color={done?"#0D0D0F":"#333"}/>
-        </button>
+    <SwipeToDelete onDelete={onDelete} disabled={!onDelete}>
+      <div style={S.listRowWrap}>
+        <div style={S.listRow}>
+          <ExerciseTile phase={phase}/>
+          <button style={{flex:1, minWidth:0, textAlign:"left", background:"none", border:"none", cursor:"pointer", padding:0}}
+            onClick={()=>setShowPicker(true)}>
+            <div style={{
+              fontSize:15, fontWeight:700, color:"#E8E8EC",
+              whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis",
+              ...(done?{textDecoration:"line-through",color:"#555"}:{}),
+            }}>
+              {exercise || "Choose exercise"}
+            </div>
+            <div style={{marginTop:4}}>
+              <span style={S.listRowPill}>{duration} sec</span>
+            </div>
+          </button>
+          <button
+            style={{...S.listRowCheck, ...(done?S.listRowCheckActive:{})}}
+            onClick={onToggle}
+          >
+            <Icon name="check" size={14} color={done?"#0D0D0F":"#333"}/>
+          </button>
+        </div>
+        {showPicker&&<ExercisePicker type={phase} onSelect={onExerciseChange} onClose={()=>setShowPicker(false)} history={history}/>}
       </div>
-      {showPicker&&<ExercisePicker type={phase} onSelect={onExerciseChange} onClose={()=>setShowPicker(false)} history={history}/>}
-    </div>
+    </SwipeToDelete>
   );
 }
 
@@ -1101,6 +1271,45 @@ function PhaseHeader({ icon, label, color, subtitle }) {
         <div className="block-display" style={{fontSize:15,letterSpacing:"-0.01em",color}}>{label}</div>
         {subtitle&&<div style={{fontSize:11,color:"#555",marginTop:2}}>{subtitle}</div>}
       </div>
+    </div>
+  );
+}
+
+// ─── WEEK STRIP (Mon-Sun, completion badges) ─────────────────────────────────
+function WeekStrip({ sessions, onDayTap }) {
+  const today = new Date();
+  // Find this week's Monday
+  const dow = (today.getDay() + 6) % 7; // 0=Mon
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - dow);
+
+  const days = Array.from({length:7}, (_,i) => {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    const key = d.toISOString().slice(0,10);
+    return {
+      key,
+      label: d.toLocaleDateString("en-GB",{weekday:"short"}),
+      num: d.getDate(),
+      isToday: key === today.toISOString().slice(0,10),
+      completed: !!sessions[key],
+    };
+  });
+
+  return (
+    <div style={S.weekStrip}>
+      {days.map(d=>(
+        <button key={d.key} style={S.weekDayCol} onClick={()=>onDayTap && onDayTap(d.key)}>
+          <span style={{...S.weekDayLabel, ...(d.isToday?{color:"#E8E8EC",fontWeight:800}:{})}}>{d.label}</span>
+          {d.completed ? (
+            <div style={S.weekDayBadge}>
+              <Icon name="check" size={13} color="#0D0D0F"/>
+            </div>
+          ) : (
+            <span style={{...S.weekDayNum, ...(d.isToday?S.weekDayNumToday:{})}}>{d.num}</span>
+          )}
+        </button>
+      ))}
     </div>
   );
 }
@@ -1251,6 +1460,7 @@ function WorkoutsByTagSheet({ tag, templates, onClose, onOpenWorkout, onSchedule
   const matching = templates.filter(t => (t.tags||[]).some(tt=>tt.label===tag.label));
 
   return (
+    <Portal>
     <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div style={{...S.modalBox, maxHeight:"75vh"}}>
         <div style={S.modalHeader}>
@@ -1286,6 +1496,7 @@ function WorkoutsByTagSheet({ tag, templates, onClose, onOpenWorkout, onSchedule
         </div>
       </div>
     </div>
+    </Portal>
   );
 }
 
@@ -1304,6 +1515,7 @@ function ScheduleDatePicker({ tpl, onClose, onConfirm }) {
   const keyFor = (d) => `${year}-${String(month+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
 
   return (
+    <Portal>
     <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div style={{...S.modalBox, maxHeight:"auto"}}>
         <div style={S.modalHeader}>
@@ -1341,6 +1553,7 @@ function ScheduleDatePicker({ tpl, onClose, onConfirm }) {
         </div>
       </div>
     </div>
+    </Portal>
   );
 }
 
@@ -1354,6 +1567,7 @@ function DayDetailSheet({ dateKey, sessions, schedule, templates, onClose, onOpe
   const isCompleted = !!session;
 
   return (
+    <Portal>
     <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div style={{...S.modalBox, maxHeight:"auto"}}>
         <div style={S.modalHeader}>
@@ -1400,6 +1614,7 @@ function DayDetailSheet({ dateKey, sessions, schedule, templates, onClose, onOpe
         </div>
       </div>
     </div>
+    </Portal>
   );
 }
 
@@ -1427,6 +1642,7 @@ function ProgressRing({ total, done }) {
 function HistoryPanel({ history, onClose }) {
   const exercises=Object.keys(history).filter(k=>history[k]?.length>0);
   return (
+    <Portal>
     <div style={S.overlay} onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div style={{...S.modalBox,maxHeight:"90vh"}}>
         <div style={S.modalHeader}>
@@ -1468,15 +1684,23 @@ function HistoryPanel({ history, onClose }) {
         )}
       </div>
     </div>
+    </Portal>
   );
 }
 
 // ─── SAVED WORKOUT TEMPLATES (home carousel) ────────────────────────────────
-const makeSet=()=>({weight:"",reps:"",done:false});
-// mode: "reps" (sets x reps, logged with weight/reps) or "time" (logged as a timed hold/circuit round)
-const mkEx = (name, mode="reps", setCount=3) => ({
-  name, mode,
-  sets: Array.from({length:setCount}, makeSet),
+// New unified set shape — every exercise gets both a rep target and a timer,
+// regardless of type. targetReps/targetTime are suggested (grey); logged* are
+// what the user actually typed (white) once confirmed.
+const makeSet = (targetReps=10, targetTime=40) => ({
+  targetReps, targetTime,
+  loggedReps: "", loggedWeight: "", loggedTime: "", effort: "",
+  done: false,
+});
+// Builds an exercise with N sets, each carrying the given suggested targets.
+const mkEx = (name, targetReps=10, targetTime=40, setCount=3) => ({
+  name,
+  sets: Array.from({length:setCount}, () => makeSet(targetReps, targetTime)),
   timings: null,
 });
 
@@ -1492,11 +1716,11 @@ const DEFAULT_TEMPLATES = [
         {name:"Arm Circles",done:false},
       ],
       supersets: [
-        { role:"major",      exercises:[mkEx("Bench Press"), mkEx("Overhead Press")] },
-        { role:"peripheral", exercises:[mkEx("Lateral Raise"), mkEx("Tricep Pushdown")] },
-        { role:"mobility",   exercises:[mkEx("Wall Slides","time",3), mkEx("Thoracic Rotation","time",3)] },
+        { role:"major",      exercises:[mkEx("Bench Press",8,60), mkEx("Overhead Press",8,60)] },
+        { role:"peripheral", exercises:[mkEx("Lateral Raise",12,45), mkEx("Tricep Pushdown",12,45)] },
+        { role:"mobility",   exercises:[mkEx("Wall Slides",1,40,3), mkEx("Thoracic Rotation",1,40,3)] },
       ],
-      core: [mkEx("Plank","time",3), mkEx("Russian Twist","reps",3), mkEx("Dead Bug","time",3)],
+      core: [mkEx("Plank",1,40,3), mkEx("Russian Twist",16,45,3), mkEx("Dead Bug",1,40,3)],
       cooldown: [{name:"Doorway Chest Stretch",done:false},{name:"Cross-Body Shoulder Stretch",done:false},{name:"Child's Pose",done:false}],
     },
   },
@@ -1511,11 +1735,11 @@ const DEFAULT_TEMPLATES = [
         {name:"Band Pull-Apart",done:false},
       ],
       supersets: [
-        { role:"major",      exercises:[mkEx("Barbell Row"), mkEx("Pull-Up")] },
-        { role:"peripheral", exercises:[mkEx("Bicep Curl"), mkEx("Hammer Curl")] },
-        { role:"mobility",   exercises:[mkEx("Thread the Needle","time",3), mkEx("Cat-Cow","time",3)] },
+        { role:"major",      exercises:[mkEx("Barbell Row",8,60), mkEx("Pull-Up",8,60)] },
+        { role:"peripheral", exercises:[mkEx("Bicep Curl",12,45), mkEx("Hammer Curl",12,45)] },
+        { role:"mobility",   exercises:[mkEx("Thread the Needle",1,40,3), mkEx("Cat-Cow",1,40,3)] },
       ],
-      core: [mkEx("Hollow Hold","time",3), mkEx("Bicycle Crunch","reps",3), mkEx("Bird Dog","time",3)],
+      core: [mkEx("Hollow Hold",1,40,3), mkEx("Bicycle Crunch",16,45,3), mkEx("Bird Dog",1,40,3)],
       cooldown: [{name:"Lying Spinal Twist",done:false},{name:"Foam Roll Thoracic",done:false},{name:"Child's Pose",done:false}],
     },
   },
@@ -1530,11 +1754,11 @@ const DEFAULT_TEMPLATES = [
         {name:"Cossack Squat",done:false},
       ],
       supersets: [
-        { role:"major",      exercises:[mkEx("Squat"), mkEx("Romanian Deadlift")] },
-        { role:"peripheral", exercises:[mkEx("Leg Curl"), mkEx("Calf Raise")] },
-        { role:"mobility",   exercises:[mkEx("Hip Circles","time",3), mkEx("Cossack Squat","time",3)] },
+        { role:"major",      exercises:[mkEx("Squat",8,60), mkEx("Romanian Deadlift",8,60)] },
+        { role:"peripheral", exercises:[mkEx("Leg Curl",12,45), mkEx("Calf Raise",15,45)] },
+        { role:"mobility",   exercises:[mkEx("Hip Circles",1,40,3), mkEx("Cossack Squat",1,40,3)] },
       ],
-      core: [mkEx("Plank","time",3), mkEx("Leg Raise","reps",3), mkEx("Side Plank","time",3)],
+      core: [mkEx("Plank",1,40,3), mkEx("Leg Raise",14,45,3), mkEx("Side Plank",1,40,3)],
       cooldown: [{name:"Pigeon Pose",done:false},{name:"Hamstring Stretch",done:false},{name:"Couch Stretch",done:false}],
     },
   },
@@ -1548,11 +1772,11 @@ const DEFAULT_TEMPLATES = [
         {name:"Thoracic Rotation",done:false},
       ],
       supersets: [
-        { role:"major",      exercises:[mkEx("Goblet Squat",  "reps",2), mkEx("Glute Bridge","reps",2)] },
-        { role:"peripheral", exercises:[mkEx("Turkish Get-Up","reps",2), mkEx("Dead Bug","time",2)] },
-        { role:"mobility",   exercises:[mkEx("Wall Slides","time",2), mkEx("Bear Crawl","time",2)] },
+        { role:"major",      exercises:[mkEx("Goblet Squat",12,45,2), mkEx("Glute Bridge",14,45,2)] },
+        { role:"peripheral", exercises:[mkEx("Turkish Get-Up",6,50,2), mkEx("Dead Bug",1,40,2)] },
+        { role:"mobility",   exercises:[mkEx("Wall Slides",1,40,2), mkEx("Bear Crawl",1,40,2)] },
       ],
-      core: [mkEx("Dead Bug","time",3), mkEx("Hollow Hold","time",3), mkEx("Bird Dog","time",3)],
+      core: [mkEx("Dead Bug",1,40,3), mkEx("Hollow Hold",1,40,3), mkEx("Bird Dog",1,40,3)],
       cooldown: [{name:"90/90 Hip Stretch",done:false},{name:"Shoulder Sleeper Stretch",done:false},{name:"Downward Dog",done:false}],
     },
   },
@@ -1566,11 +1790,11 @@ const defaultWorkout=()=>({
     {name:"Dead Bug",done:false},
   ],
   supersets:[
-    { role:"major",      exercises:[mkEx("Bench Press"), mkEx("Barbell Row")] },
-    { role:"peripheral", exercises:[mkEx("Lateral Raise"), mkEx("Bicep Curl")] },
-    { role:"mobility",   exercises:[mkEx("Thoracic Rotation","time",3), mkEx("Wall Slides","time",3)] },
+    { role:"major",      exercises:[mkEx("Bench Press",8,60), mkEx("Barbell Row",8,60)] },
+    { role:"peripheral", exercises:[mkEx("Lateral Raise",12,45), mkEx("Bicep Curl",12,45)] },
+    { role:"mobility",   exercises:[mkEx("Thoracic Rotation",1,40,3), mkEx("Wall Slides",1,40,3)] },
   ],
-  core: [mkEx("Plank","time",3), mkEx("Russian Twist","reps",3), mkEx("Dead Bug","time",3)],
+  core: [mkEx("Plank",1,40,3), mkEx("Russian Twist",16,45,3), mkEx("Dead Bug",1,40,3)],
   cooldown:[
     {name:"Pigeon Pose",done:false},
     {name:"Hamstring Stretch",done:false},
@@ -1723,7 +1947,7 @@ function App() {
     const w={...workout,supersets:workout.supersets.map((ss,si)=>
       si!==ssIdx?ss:{...ss,exercises:ss.exercises.map((ex,ei)=>
         ei!==exIdx?ex:{...ex,sets:ex.sets.map((s,i)=>
-          i!==setIdx?s:{...s,weight:weight||s.weight,reps:reps||s.reps,done:true}
+          i!==setIdx?s:{...s,loggedWeight:weight||s.loggedWeight,loggedReps:reps||s.loggedReps,done:true}
         )}
       )}
     )};
@@ -1734,10 +1958,22 @@ function App() {
     if(!weight && !reps) return;
     const w={...workout,core:(workout.core||[]).map((ex,ci)=>
       ci!==coreIdx?ex:{...ex,sets:ex.sets.map((s,i)=>
-        i!==setIdx?s:{...s,weight:weight||s.weight,reps:reps||s.reps,done:true}
+        i!==setIdx?s:{...s,loggedWeight:weight||s.loggedWeight,loggedReps:reps||s.loggedReps,done:true}
       )}
     )};
     setWorkout(w);
+  }
+
+  // Warmup/cooldown items aren't full exercises with sets — they just get a
+  // logged rep count and a done flag once you finish that step in the timer.
+  function handleLogSimple(exerciseKey, reps) {
+    const [section, idxStr] = exerciseKey.split("-");
+    const idx = parseInt(idxStr, 10);
+    if (section === "warmup") {
+      setWorkout(w=>({...w, warmup: w.warmup.map((x,j)=>j===idx?{...x, loggedReps: reps, done:true}:x)}));
+    } else if (section === "cd") {
+      setWorkout(w=>({...w, cooldown: w.cooldown.map((x,j)=>j===idx?{...x, loggedReps: reps, done:true}:x)}));
+    }
   }
 
   // ── Workout editing helpers ──
@@ -1745,6 +1981,21 @@ function App() {
   const updateCooldown = (i,item)=>setWorkout(w=>({...w,cooldown:w.cooldown.map((x,j)=>j===i?item:x)}));
   const updateSuperset = (i,ss)  =>setWorkout(w=>({...w,supersets:w.supersets.map((x,j)=>j===i?ss:x)}));
   const updateCoreEx   = (i,ex)  =>setWorkout(w=>({...w,core:(w.core||[]).map((x,j)=>j===i?ex:x)}));
+
+  // Deletion respects the structural minimums: warmup needs 3-5, core/cooldown always exactly 3.
+  const deleteWarmup = (i) => setWorkout(w => {
+    if (w.warmup.length <= 3) { alert("Warm Up needs at least 3 exercises."); return w; }
+    return { ...w, warmup: w.warmup.filter((_,j)=>j!==i) };
+  });
+  const deleteCooldown = (i) => {
+    alert("Cool Down always has exactly 3 exercises — swap it instead of deleting, or edit the exercise list directly.");
+  };
+  const deleteCoreEx = (i) => {
+    alert("Core Circuit always has exactly 3 exercises — swap it instead of deleting.");
+  };
+  const deleteSupersetEx = (si, ei) => {
+    alert("Each superset always has its two exercises — swap one instead of deleting.");
+  };
 
   const countSets=()=>{
     let total=0,done=0;
@@ -1761,16 +2012,18 @@ function App() {
       if(!ex.name)return;
       if(!nh[ex.name])nh[ex.name]=[];
       ex.sets.forEach(s=>{
-        if(s.weight&&s.reps&&s.done)
-          nh[ex.name].push({weight:s.weight,reps:s.reps,date:new Date().toISOString()});
+        const reps = s.loggedReps || s.targetReps;
+        if(s.loggedWeight && reps && s.done)
+          nh[ex.name].push({weight:s.loggedWeight,reps,date:new Date().toISOString()});
       });
     }));
     (workout.core||[]).forEach(ex=>{
       if(!ex.name)return;
       if(!nh[ex.name])nh[ex.name]=[];
       ex.sets.forEach(s=>{
-        if(s.weight&&s.reps&&s.done)
-          nh[ex.name].push({weight:s.weight,reps:s.reps,date:new Date().toISOString()});
+        const reps = s.loggedReps || s.targetReps;
+        if(s.loggedWeight && reps && s.done)
+          nh[ex.name].push({weight:s.loggedWeight,reps,date:new Date().toISOString()});
       });
     });
     saveHistory(nh);
@@ -1808,6 +2061,8 @@ function App() {
             <Icon name="history" size={17} color="#0D0D0F"/>
           </button>
         </div>
+
+        <WeekStrip sessions={sessions} onDayTap={setActiveDayDetail}/>
 
         <div style={{flex:1,overflowY:"auto",WebkitOverflowScrolling:"touch",paddingBottom:32}}>
 
@@ -1933,6 +2188,7 @@ function App() {
           workout={workout}
           onLogSet={handleLogSet}
           onLogCoreSet={handleLogCoreSet}
+          onLogSimple={handleLogSimple}
           onExit={()=>{setTimerActive(false);setRunning(false);clearInterval(intervalRef.current);}}
         />
       </div>
@@ -2018,7 +2274,7 @@ function App() {
               <Icon name="refresh" size={22} color="#999"/>
               <span style={S.detailActionLabel}>Reset</span>
             </button>
-            <button style={S.detailActionBtn} onClick={launchTimer}>
+            <button style={S.detailActionBtn} onClick={()=>launchTimer()}>
               <Icon name="play" size={22} color="#C8F03C"/>
               <span style={{...S.detailActionLabel,color:"#C8F03C"}}>Start</span>
             </button>
@@ -2030,6 +2286,7 @@ function App() {
         {workout.warmup.map((item,i)=>(
           <SimpleListRow key={i} exercise={item.name}
             onExerciseChange={name=>updateWarmup(i,{...item,name})}
+            onDelete={()=>deleteWarmup(i)}
             history={history} phase="warmup" done={item.done}
             onToggle={()=>updateWarmup(i,{...item,done:!item.done})}
             duration={defaultTimings(item.name).work}/>
@@ -2049,7 +2306,7 @@ function App() {
               {ss.exercises.map((ex,ei)=>(
                 <ExerciseListRow key={ei}
                   label={String.fromCharCode(65+ei)}
-                  exercise={ex.name} sets={ex.sets} timings={ex.timings} mode={ex.mode}
+                  exercise={ex.name} sets={ex.sets} timings={ex.timings}
                   onExerciseChange={n=>{
                     const d={...ss,exercises:ss.exercises.map((e,i)=>i===ei?{...e,name:n}:e)};
                     updateSuperset(si,d);
@@ -2062,6 +2319,7 @@ function App() {
                     const d={...ss,exercises:ss.exercises.map((e,i)=>i===ei?{...e,timings:t}:e)};
                     updateSuperset(si,d);
                   }}
+                  onDelete={()=>deleteSupersetEx(si,ei)}
                   history={history} phase="strength"/>
               ))}
             </React.Fragment>
@@ -2073,10 +2331,11 @@ function App() {
         {(workout.core||[]).map((ex,ci)=>(
           <ExerciseListRow key={ci}
             label={`${ci+1}`}
-            exercise={ex.name} sets={ex.sets} timings={ex.timings} mode={ex.mode}
+            exercise={ex.name} sets={ex.sets} timings={ex.timings}
             onExerciseChange={n=>updateCoreEx(ci,{...ex,name:n})}
             onSetsChange={s=>updateCoreEx(ci,{...ex,sets:s})}
             onTimingsChange={t=>updateCoreEx(ci,{...ex,timings:t})}
+            onDelete={()=>deleteCoreEx(ci)}
             history={history} phase="core"/>
         ))}
 
@@ -2085,6 +2344,7 @@ function App() {
         {workout.cooldown.map((item,i)=>(
           <SimpleListRow key={i} exercise={item.name}
             onExerciseChange={name=>updateCooldown(i,{...item,name})}
+            onDelete={()=>deleteCooldown(i)}
             history={history} phase="cooldown" done={item.done}
             onToggle={()=>updateCooldown(i,{...item,done:!item.done})}
             duration={defaultTimings(item.name).work}/>
@@ -2106,7 +2366,7 @@ function App() {
 
       {/* STICKY START BAR */}
       <div style={S.stickyStartBar}>
-        <button style={S.stickyStartBtn} onClick={launchTimer}>
+        <button style={S.stickyStartBtn} onClick={()=>launchTimer()}>
           <Icon name="play" size={16} color="#0D0D0F"/> START WORKOUT
         </button>
       </div>
@@ -2174,18 +2434,25 @@ const S = {
   exSelector: { flex:1,display:"flex",alignItems:"center",justifyContent:"space-between",background:"#111115",border:"1px solid #1c1c22",borderRadius:8,padding:"8px 11px",cursor:"pointer" },
   statsBar:   { display:"flex",alignItems:"center",gap:7,flexWrap:"wrap",background:"#0a0a0d",border:"1px solid #141418",borderRadius:8,padding:"6px 10px",marginBottom:9 },
   statItem:   { display:"flex",alignItems:"center",gap:4,fontSize:11,fontWeight:600,color:"#777" },
+  statsBarLarge: { display:"flex",flexDirection:"column",gap:3,marginBottom:10 },
+  statsBarRow:   { display:"flex",alignItems:"baseline",gap:8 },
+  statsBarLabel: { fontSize:13,color:"#999",fontWeight:500 },
+  statsBarValue: { fontSize:15,color:"#C8F03C",fontWeight:800,fontFamily:"monospace" },
   timingChip: { display:"flex",alignItems:"center",gap:4,fontSize:10,fontWeight:800,padding:"4px 10px",borderRadius:14,background:"#C8F03C0e",border:"1px solid #C8F03C44" },
   timingEditBtn:{ background:"none",border:"none",cursor:"pointer",padding:"2px 6px",display:"flex",alignItems:"center" },
   setCountLabel:{ fontSize:9,fontWeight:900,color:"#383840",letterSpacing:"0.15em" },
   countBtn:   { width:26,height:26,borderRadius:7,background:"#1a1a1f",border:"1px solid #252530",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer" },
-  setRow:     { display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #0f0f12" },
+  setRow:     { display:"flex",alignItems:"center",gap:6,padding:"8px 0",borderBottom:"1px solid #0f0f12" },
   setRowDone: { opacity:0.45 },
   setRowPB:   { background:"rgba(255,184,0,0.05)",borderRadius:8,padding:"7px 6px" },
   setNum:     { width:20,height:20,borderRadius:5,flexShrink:0,background:"#1a1a1f",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:800,color:"#444" },
+  setChipGrid:{ flex:1,display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:5 },
+  chipWrap:   { position:"relative",display:"flex",flexDirection:"column",gap:2,minWidth:0 },
+  chipInput:  { width:"100%",background:"#111115",border:"1px solid #1c1c22",borderRadius:7,padding:"6px 2px",fontSize:16,fontWeight:800,fontFamily:"monospace",outline:"none",textAlign:"center",boxSizing:"border-box" },
   inputWrap:  { flex:1,position:"relative",display:"flex",flexDirection:"column",gap:2 },
-  inputLabel: { fontSize:9,fontWeight:800,color:"#2e2e38",letterSpacing:"0.15em" },
+  inputLabel: { fontSize:8,fontWeight:800,color:"#2e2e38",letterSpacing:"0.1em" },
   setInput:   { width:"100%",background:"#111115",border:"1px solid #1c1c22",borderRadius:8,padding:"8px 6px",color:"#E8E8EC",fontSize:17,fontWeight:800,fontFamily:"monospace",outline:"none",textAlign:"center" },
-  pbBadge:    { position:"absolute",top:-7,right:-3,background:"#FFB800",color:"#0D0D0F",fontSize:8,fontWeight:900,borderRadius:4,padding:"1px 4px" },
+  pbBadge:    { position:"absolute",top:-7,right:-3,background:"#FFB800",color:"#0D0D0F",fontSize:8,fontWeight:900,borderRadius:4,padding:"1px 4px",zIndex:2 },
   doneBtn:    { width:32,height:32,borderRadius:8,flexShrink:0,background:"#111115",border:"1px solid #1c1c22",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer" },
   doneBtnActive:{ background:"#C8F03C",border:"1px solid #C8F03C" },
   noteToggle: { display:"flex",alignItems:"center",gap:5,background:"none",border:"none",cursor:"pointer",padding:"5px 0 2px" },
@@ -2235,6 +2502,12 @@ const S = {
 
   // Home screen
   homeHeader: { display:"flex", alignItems:"center", justifyContent:"space-between", padding:"16px 18px 6px", flexShrink:0 },
+  weekStrip:  { display:"grid", gridTemplateColumns:"repeat(7,1fr)", padding:"6px 18px 4px", gap:4 },
+  weekDayCol: { display:"flex", flexDirection:"column", alignItems:"center", gap:6, background:"none", border:"none", cursor:"pointer", padding:"6px 2px" },
+  weekDayLabel: { fontSize:11, fontWeight:600, color:"#555" },
+  weekDayNum: { width:30, height:30, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", fontSize:13, fontWeight:700, color:"#888" },
+  weekDayNumToday: { border:"2px solid #C8F03C", color:"#E8E8EC", fontWeight:800 },
+  weekDayBadge: { width:30, height:30, borderRadius:"50%", background:"#C8F03C", display:"flex", alignItems:"center", justifyContent:"center" },
   homeLogoRow: { display:"flex", alignItems:"center", gap:8 },
   homeAvatar: { width:38, height:38, borderRadius:"50%", background:"linear-gradient(135deg,#C8F03C,#8FCC1A)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:14, fontWeight:900, color:"#0D0D0F" },
   homeSection: { padding:"18px 18px 4px" },
@@ -2259,6 +2532,10 @@ const S = {
 
   // Single-scroll list rows (new workout detail template)
   listRowWrap:     { borderBottom:"1px solid #15151a" },
+  swipeDeleteAction: { position:"absolute", top:0, right:0, bottom:0, width:72, display:"flex", alignItems:"center", justifyContent:"center", background:"#E0334A" },
+  swipeDeleteBtn:    { display:"flex", flexDirection:"column", alignItems:"center", gap:3, background:"none", border:"none", cursor:"pointer", width:"100%", height:"100%", justifyContent:"center" },
+  previewCard:       { background:"#15151a", border:"1px solid #252530", borderRadius:18, padding:"20px", maxWidth:340, width:"88%", margin:"0 auto" },
+  previewCloseBtn:   { marginTop:14, width:"100%", padding:"11px", borderRadius:10, background:"#1f1f26", border:"1px solid #2a2a34", color:"#aaa", fontSize:13, fontWeight:700, cursor:"pointer" },
   listRow:         { display:"flex", alignItems:"center", gap:12, padding:"12px 18px", width:"100%", background:"none", border:"none", cursor:"pointer", textAlign:"left" },
   listRowPill:     { fontSize:11, fontWeight:700, color:"#888", background:"#1a1a1f", padding:"3px 9px", borderRadius:8 },
   listRowCheck:    { width:30, height:30, borderRadius:8, flexShrink:0, background:"#1a1a1f", border:"1px solid #252530", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer" },
