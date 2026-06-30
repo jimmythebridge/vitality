@@ -149,17 +149,32 @@ function defaultTimings(exerciseName) {
   const isWarmup   = EXERCISE_LIBRARY.warmup.includes(exerciseName);
   const isCooldown = EXERCISE_LIBRARY.cooldown.includes(exerciseName);
   if (isWarmup || isCooldown) return { work: 40, rest: 10 };
-  if (isCompound)              return { work: 60, rest: 90 };
-  return                              { work: 45, rest: 60 };
+  if (isCompound)              return { work: 60, rest: 45 };
+  return                              { work: 45, rest: 30 };
 }
+
+// Fixed rest used specifically when moving from one exercise to the next
+// within the same superset/circuit round — distinct from the rest taken
+// between repeated rounds of the SAME exercise (which uses defaultTimings above).
+const BETWEEN_EXERCISE_REST = 15;
+
+// Fixed "get into position" buffer inserted before every single set, work
+// or transition. Not user-editable — same for everyone, every exercise.
+const PREP_TIME = 3;
 
 // ─── STORAGE ─────────────────────────────────────────────────────────────────
 const STORAGE_KEY   = "vitality_workout_history_v3";
 const SESSIONS_KEY   = "vitality_session_log_v1";
 const TEMPLATES_KEY  = "vitality_templates_v1";
+const PROGRESS_KEY   = "vitality_session_progress_v1";
 
 function saveHistory(h) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(h)); } catch {} }
 function loadHistory()  { try { const r = localStorage.getItem(STORAGE_KEY); return r ? JSON.parse(r) : {}; } catch { return {}; } }
+
+// Mid-workout progress — saved every time a step completes, cleared on workout complete or discard.
+function saveProgress(data) { try { localStorage.setItem(PROGRESS_KEY, JSON.stringify({ ...data, savedAt: Date.now() })); } catch {} }
+function loadProgress()     { try { const r = localStorage.getItem(PROGRESS_KEY); return r ? JSON.parse(r) : null; } catch { return null; } }
+function clearProgress()    { try { localStorage.removeItem(PROGRESS_KEY); } catch {} }
 
 // Session log: { "2026-06-23": { count: 1, names: ["Push Day"] }, ... }
 function saveSessions(s) { try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(s)); } catch {} }
@@ -283,6 +298,9 @@ function beep(freq=880, dur=0.12, type="sine", vol=0.4) {
 function beepWork() { beep(660, 0.10, "sine", 0.3); setTimeout(()=>beep(880,0.15,"sine",0.4),120); }
 function beepRest() { beep(440, 0.15, "sine", 0.35); setTimeout(()=>beep(330,0.20,"sine",0.3),150); }
 function beepCountdown() { beep(1047, 0.08, "sine", 0.2); }
+// Distinct "10 seconds remaining" bell — a single warmer, longer tone so it's
+// clearly different from the sharp 3-2-1 countdown beeps that follow it.
+function beepTenSecWarning() { beep(784, 0.22, "triangle", 0.32); }
 
 // ─── FLAT WORKOUT QUEUE ──────────────────────────────────────────────────────
 // Builds a flat ordered list of "steps" from the workout structure.
@@ -302,20 +320,24 @@ function buildQueue(workout) {
   // Supersets
   const roleLabel = { major:"Major", peripheral:"Peripheral", mobility:"Mobility" };
   workout.supersets.forEach((ss, si) => {
-    const totalSets = ss.exercises[0]?.sets?.length || 3;
+    const namedSSEx = ss.exercises
+      .map((ex, originalIdx) => ({ ex, originalIdx }))
+      .filter(({ex}) => ex.name);
+    if (!namedSSEx.length) return;
+    const totalSets = namedSSEx[0]?.ex?.sets?.length || 3;
     const rLabel = roleLabel[ss.role] || `Superset ${si+1}`;
     for (let setIdx = 0; setIdx < totalSets; setIdx++) {
-      ss.exercises.forEach((ex, ei) => {
+      namedSSEx.forEach(({ex, originalIdx: ei}, listIdx) => {
         const setData = ex.sets[setIdx] || {};
         const t = ex.timings || defaultTimings(ex.name);
         const workTime = setData.targetTime || t.work;
-        const isLastExInSet   = ei === ss.exercises.length - 1;
+        const isLastExInSet   = listIdx === namedSSEx.length - 1;
         const isLastSetOfSS   = setIdx === totalSets - 1;
         const nextLabel = !isLastExInSet
-          ? ss.exercises[ei+1].name
+          ? namedSSEx[listIdx+1].ex.name
           : isLastSetOfSS
             ? (workout.supersets[si+1] ? roleLabel[workout.supersets[si+1].role] : "Core circuit")
-            : `Set ${setIdx+2} · ${ss.exercises[0].name}`;
+            : `Set ${setIdx+2} · ${namedSSEx[0].ex.name}`;
 
         steps.push({
           id: id++, phase:"strength", type:"work",
@@ -334,7 +356,10 @@ function buildQueue(workout) {
           exerciseKey: `ss${si}-ex${ei}`,
           setIndex: setIdx,
           ssIndex: si, exIndex: ei,
-          work: workTime, rest: t.rest,
+          work: workTime,
+          // Moving to the OTHER exercise in this round → short 15s transition rest.
+          // Looping back to the same exercise for its next round → its own rest value.
+          rest: isLastExInSet ? t.rest : BETWEEN_EXERCISE_REST,
           isLastExInSet, isLastSetOfSS,
         });
       });
@@ -344,6 +369,7 @@ function buildQueue(workout) {
   // Core circuit (always 3 exercises)
   const coreList = workout.core || [];
   coreList.forEach((ex, ci) => {
+    if (!ex.name) return;
     const t = ex.timings || defaultTimings(ex.name);
     const totalSets = ex.sets?.length || 3;
     for (let setIdx = 0; setIdx < totalSets; setIdx++) {
@@ -359,15 +385,62 @@ function buildQueue(workout) {
         targetReps: setData.targetReps,
         work: workTime, rest: t.rest,
       });
+      const isLastSetOfThisEx = setIdx === totalSets - 1;
       steps.push({
         id: id++, phase:"core", type:"rest",
         label: "Rest",
-        subLabel: isLast ? "Next: Cool down" : `Next: ${coreList[(ci+1)%coreList.length]?.name}`,
+        subLabel: isLast ? "Next: Cool down" : `Next: ${coreList[(ci+1)%coreList.length]?.name || "Cool down"}`,
         exerciseKey: `core${ci}`,
         setIndex: setIdx, coreIndex: ci,
-        work: workTime, rest: t.rest,
+        work: workTime,
+        // Last set of this exercise → moving to a DIFFERENT exercise → short 15s rest.
+        // Otherwise → next round of the SAME exercise → its own rest value.
+        rest: isLastSetOfThisEx ? BETWEEN_EXERCISE_REST : t.rest,
       });
     }
+  });
+
+  // Custom blocks (free-form, user-added)
+  const customList = workout.customBlocks || [];
+  customList.forEach((block, bi) => {
+    const namedExercises = block.exercises
+      .map((ex, originalIdx) => ({ ex, originalIdx }))
+      .filter(({ex}) => ex.name);
+    namedExercises.forEach(({ex, originalIdx: ei}, listIdx) => {
+      const t = ex.timings || defaultTimings(ex.name);
+      const totalSets = ex.sets?.length || 3;
+      for (let setIdx = 0; setIdx < totalSets; setIdx++) {
+        const setData = ex.sets[setIdx] || {};
+        const workTime = setData.targetTime || t.work;
+        const isLastEx = listIdx === namedExercises.length - 1;
+        const isLastSet = setIdx === totalSets - 1;
+        const nextLabel = !isLastEx
+          ? namedExercises[listIdx+1].ex.name
+          : isLastSet
+            ? (customList[bi+1] ? customList[bi+1].title : "Cool down")
+            : `Set ${setIdx+2} · ${namedExercises[0].ex.name}`;
+        steps.push({
+          id: id++, phase:"custom", type:"work",
+          label: ex.name,
+          subLabel: `${block.title} · Set ${setIdx+1}/${totalSets}`,
+          exerciseKey: `cb${bi}-ex${ei}`,
+          setIndex: setIdx, blockIndex: bi, exIndex: ei,
+          targetReps: setData.targetReps,
+          work: workTime, rest: t.rest,
+        });
+        steps.push({
+          id: id++, phase:"custom", type:"rest",
+          label: "Rest",
+          subLabel: `Next: ${nextLabel}`,
+          exerciseKey: `cb${bi}-ex${ei}`,
+          setIndex: setIdx, blockIndex: bi, exIndex: ei,
+          work: workTime,
+          // Last set of THIS exercise → next is a different exercise → 15s.
+          // Otherwise → next round of the same exercise → its own rest value.
+          rest: isLastSet ? BETWEEN_EXERCISE_REST : t.rest,
+        });
+      }
+    });
   });
 
   // Cooldown
@@ -379,7 +452,23 @@ function buildQueue(workout) {
     }
   });
 
-  return steps;
+  // Insert a fixed 3-second "get into position" prep step before every work
+  // step — gives a buffer to get set up before the countdown actually starts.
+  const withPrep = [];
+  steps.forEach(step => {
+    if (step.type === "work") {
+      withPrep.push({
+        ...step,
+        id: id++,
+        type: "prep",
+        subLabel: `Get ready: ${step.label}`,
+        work: PREP_TIME,
+      });
+    }
+    withPrep.push(step);
+  });
+
+  return withPrep;
 }
 
 // ─── ICONS ───────────────────────────────────────────────────────────────────
@@ -407,6 +496,11 @@ function Icon({ name, size=18, color="currentColor" }) {
     back:      <svg {...p} strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>,
     heart:     <svg {...p} strokeWidth="2" fill={color==="#C8F03C"?color:"none"}><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>,
     edit:      <svg {...p}><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>,
+    dragHandle: <svg width={size} height={size} viewBox="0 0 24 24" fill={color} stroke="none">
+      <circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/>
+      <circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/>
+      <circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/>
+    </svg>,
   };
   return d[name] || null;
 }
@@ -418,7 +512,8 @@ function TimerRing({ seconds, total, phase }) {
   const pct = total > 0 ? seconds / total : 1;
   const offset = CIRC * (1 - pct);
   const isRest = phase === "rest";
-  const color = isRest ? "#A78BFA" : "#C8F03C";
+  const isPrep = phase === "prep";
+  const color = isPrep ? "#5EEAD4" : isRest ? "#A78BFA" : "#C8F03C";
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
   const timeStr = mins > 0 ? `${mins}:${String(secs).padStart(2,"0")}` : String(seconds);
@@ -465,21 +560,157 @@ function TimerRing({ seconds, total, phase }) {
         }}>{timeStr}</div>
         <div style={{
           fontSize:11, fontWeight:800, letterSpacing:"0.18em",
-          color: isRest ? "#7c6bd4" : "#7a9926",
+          color: isPrep ? "#3da89a" : isRest ? "#7c6bd4" : "#7a9926",
           marginTop:4,
-        }}>{isRest ? "REST" : "WORK"}</div>
+        }}>{isPrep ? "GET READY" : isRest ? "REST" : "WORK"}</div>
       </div>
     </div>
   );
 }
 
+// ─── RESUME PROMPT ────────────────────────────────────────────────────────────
+function ResumePrompt({ saved, onResume, onDiscard }) {
+  const savedAgo = saved.savedAt
+    ? Math.round((Date.now() - saved.savedAt) / 60000)
+    : null;
+  const stepsDone = saved.queueIdx || 0;
+  const stepsTotal = saved.queue?.length || 1;
+  const pct = Math.round((stepsDone / stepsTotal) * 100);
+
+  return (
+    <Portal>
+      <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.92)", zIndex:300,
+        display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"flex-end",
+        padding:"0 0 40px" }}>
+        <div style={{ width:"100%", maxWidth:480, background:"#111115",
+          borderRadius:"24px 24px 0 0", border:"1px solid #1e1e26", borderBottom:"none",
+          padding:"28px 24px 32px", display:"flex", flexDirection:"column", gap:20 }}>
+
+          <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+            <div style={{ width:48, height:48, borderRadius:14, background:"#C8F03C1a",
+              border:"1px solid #C8F03C44", display:"flex", alignItems:"center", justifyContent:"center" }}>
+              <Icon name="play" size={20} color="#C8F03C"/>
+            </div>
+            <div>
+              <div className="block-display" style={{ fontSize:18, color:"#E8E8EC" }}>
+                {saved.activeWorkoutName || "Workout"}
+              </div>
+              <div style={{ fontSize:12, color:"#666", marginTop:2 }}>
+                {pct}% complete{savedAgo !== null ? ` · paused ${savedAgo < 1 ? "just now" : `${savedAgo}m ago`}` : ""}
+              </div>
+            </div>
+          </div>
+
+          {/* Mini progress bar */}
+          <div style={{ height:4, background:"#1a1a1f", borderRadius:2, overflow:"hidden" }}>
+            <div style={{ width:`${pct}%`, height:"100%", background:"#C8F03C", borderRadius:2,
+              transition:"width 0.4s ease" }}/>
+          </div>
+
+          <button style={{ width:"100%", padding:"15px", borderRadius:14, background:"#C8F03C",
+            border:"none", color:"#0D0D0F", fontSize:15, fontWeight:900, cursor:"pointer",
+            display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}
+            onClick={onResume}>
+            <Icon name="play" size={16} color="#0D0D0F"/> Resume Workout
+          </button>
+
+          <button style={{ width:"100%", padding:"13px", borderRadius:14, background:"#111115",
+            border:"1px solid #252530", color:"#999", fontSize:14, fontWeight:700, cursor:"pointer" }}
+            onClick={onDiscard}>
+            Discard &amp; start fresh
+          </button>
+        </div>
+      </div>
+    </Portal>
+  );
+}
+
+// ─── WORKOUT TIMELINE BAR ─────────────────────────────────────────────────────
+// A segmented horizontal bar showing the full workout queue. Each segment is
+// one step. Completed steps are filled white, the current step is highlighted
+// with a lime dot, future steps are faint dashes. Groups by phase colour.
+function WorkoutTimeline({ queue, queueIdx, elapsedSeconds }) {
+  const mins = Math.floor(elapsedSeconds / 60);
+  const secs = elapsedSeconds % 60;
+  const elapsed = `${mins}:${String(secs).padStart(2,"0")}`;
+  const pct = queue.length > 0 ? Math.round((queueIdx / queue.length) * 100) : 0;
+
+  const phaseColor = (step) => {
+    if (!step) return "#333";
+    if (step.type === "prep")  return "#5EEAD4";
+    if (step.type === "rest")  return "#A78BFA";
+    if (step.phase === "warmup")   return "#FF6B35";
+    if (step.phase === "core")     return "#FFB800";
+    if (step.phase === "cooldown") return "#A78BFA";
+    return "#C8F03C";
+  };
+
+  return (
+    <div style={{ width:"100%", paddingBottom:12 }}>
+      <div style={{ display:"flex", alignItems:"baseline", gap:8, marginBottom:8, paddingHorizontal:0 }}>
+        <span style={{ fontSize:16, fontWeight:900, color:"#E8E8EC", fontFamily:"monospace" }}>{elapsed}</span>
+        <span style={{ fontSize:13, color:"#666", fontWeight:600 }}>· {pct}%</span>
+      </div>
+      <div style={{ display:"flex", alignItems:"center", gap:2, height:4 }}>
+        {queue.map((step, i) => {
+          const isDone    = i < queueIdx;
+          const isCurrent = i === queueIdx;
+          const color     = phaseColor(step);
+          return (
+            <div key={i} style={{ flex:1, height: isCurrent ? 6 : 4, borderRadius:3,
+              background: isDone ? "#E8E8EC" : isCurrent ? color : color + "30",
+              transition:"all 0.3s ease",
+              marginTop: isCurrent ? -1 : 0,
+            }}/>
+          );
+        })}
+      </div>
+      {/* Current step dot indicator — shows which segment we're on */}
+      {queue.length > 0 && (
+        <div style={{ position:"relative", height:10, marginTop:2 }}>
+          <div style={{
+            position:"absolute",
+            left:`calc(${(queueIdx / queue.length) * 100}% - 5px)`,
+            top:0, width:10, height:10, borderRadius:"50%",
+            background: phaseColor(queue[queueIdx]),
+            transition:"left 0.4s ease",
+          }}/>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── TIMER SCREEN ─────────────────────────────────────────────────────────────
-function TimerScreen({ step, secondsLeft, totalSeconds, running, onPlayPause, onSkip, onAddTime, workout, onLogSet, onLogCoreSet, onLogSimple, onExit }) {
+function TimerScreen({ step, secondsLeft, totalSeconds, running, onPlayPause, onSkip, onAddTime, workout, onLogSet, onLogCoreSet, onLogSimple, onExit, queue, queueIdx, elapsedSeconds, onSkipToNextExercise }) {
   const isWork = step.type === "work";
   const isRest = step.type === "rest";
+  const isPrep = step.type === "prep";
   const isStrength = step.phase === "strength";
   const isCore = step.phase === "core";
   const isSimple = step.phase === "warmup" || step.phase === "cooldown";
+
+  // Swipe-left gesture to jump to next exercise
+  const swipeStartX = useRef(null);
+  const swipeStartY = useRef(null);
+  const [swipeHint, setSwipeHint] = useState(false);
+
+  function handleTouchStart(e) {
+    swipeStartX.current = e.touches[0].clientX;
+    swipeStartY.current = e.touches[0].clientY;
+  }
+  function handleTouchEnd(e) {
+    if (swipeStartX.current === null) return;
+    const dx = e.changedTouches[0].clientX - swipeStartX.current;
+    const dy = Math.abs(e.changedTouches[0].clientY - swipeStartY.current);
+    swipeStartX.current = null;
+    // Left swipe: at least 60px horizontal, under 40px vertical drift
+    if (dx < -60 && dy < 40 && onSkipToNextExercise) {
+      setSwipeHint(true);
+      setTimeout(()=>setSwipeHint(false), 600);
+      onSkipToNextExercise();
+    }
+  }
 
   // Reps default to the suggested target (shown grey) until the user overrides it.
   const [reps, setReps]     = useState("");
@@ -489,12 +720,12 @@ function TimerScreen({ step, secondsLeft, totalSeconds, running, onPlayPause, on
   // Reset local inputs whenever we land on a new work step
   useEffect(() => { setReps(""); setWeight(""); }, [step.id]);
 
-  const phaseColor = {
+  const phaseColor = isPrep ? "#5EEAD4" : ({
     warmup:   "#FF6B35",
     strength: isRest ? "#A78BFA" : "#C8F03C",
     core:     isRest ? "#A78BFA" : "#FFB800",
     cooldown: "#A78BFA",
-  }[step.phase] || "#C8F03C";
+  }[step.phase] || "#C8F03C");
 
   const handleDone = () => {
     const repsToLog = repsHasValue ? reps : (step.targetReps ?? "");
@@ -510,18 +741,32 @@ function TimerScreen({ step, secondsLeft, totalSeconds, running, onPlayPause, on
     onSkip();
   };
 
+  // Explicit skip — advances to the next step WITHOUT logging anything for
+  // this set. Distinct from "Set Complete", which always logs first.
+  const handleSkipOnly = () => { onSkip(); };
+
   return (
     <div className="anim-flash" style={{
       display:"flex", flexDirection:"column", alignItems:"center",
       padding:"0 24px 32px",
       minHeight:"100%",
       background:"#0D0D0F",
-    }}>
+    }}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+    >
+
+      {/* Progress timeline — elapsed time + segmented position bar */}
+      {queue?.length > 0 && (
+        <div style={{ width:"100%", padding:"12px 0 0" }}>
+          <WorkoutTimeline queue={queue} queueIdx={queueIdx} elapsedSeconds={elapsedSeconds}/>
+        </div>
+      )}
 
       {/* Top bar */}
       <div style={{
         display:"flex", alignItems:"center", justifyContent:"space-between",
-        width:"100%", padding:"14px 0 8px",
+        width:"100%", padding:"8px 0 8px",
       }}>
         <button style={S.iconBtnSm} onClick={onExit}>
           <Icon name="back" size={20} color="#666"/>
@@ -547,7 +792,7 @@ function TimerScreen({ step, secondsLeft, totalSeconds, running, onPlayPause, on
         borderRadius:20, padding:"3px 12px", marginBottom:28,
         fontSize:11, fontWeight:800, color:phaseColor, letterSpacing:"0.1em",
       }}>
-        {isRest ? "REST" : step.phase === "warmup" ? "WARM UP" : step.phase === "cooldown" ? "COOL DOWN" : step.phase === "core" ? "CORE CIRCUIT" : "WORK SET"}
+        {isPrep ? "GET READY" : isRest ? "REST" : step.phase === "warmup" ? "WARM UP" : step.phase === "cooldown" ? "COOL DOWN" : step.phase === "core" ? "CORE CIRCUIT" : "WORK SET"}
       </div>
 
       {/* Ring */}
@@ -590,7 +835,7 @@ function TimerScreen({ step, secondsLeft, totalSeconds, running, onPlayPause, on
 
       {/* Controls */}
       <div style={{
-        display:"flex", alignItems:"center", gap:16,
+        display:"flex", alignItems:"center", gap:isWork?10:16,
         marginTop: isWork ? 20 : 32,
         width:"100%",
       }}>
@@ -612,20 +857,36 @@ function TimerScreen({ step, secondsLeft, totalSeconds, running, onPlayPause, on
           <Icon name={running?"pause":"play"} size={28} color={running?"#C8F03C":"#0D0D0F"}/>
         </button>
 
-        {/* Skip / Done */}
-        <button
-          style={{
-            ...S.controlBtnSm,
-            background: isWork ? "#C8F03C1a" : "#A78BFA1a",
-            border: `1px solid ${isWork?"#C8F03C44":"#A78BFA44"}`,
-          }}
-          onClick={handleDone}
-        >
-          <Icon name="skip" size={20} color={isWork?"#C8F03C":"#A78BFA"}/>
-          <span style={{fontSize:11,color:isWork?"#C8F03C":"#A78BFA",fontWeight:700}}>
-            {isWork ? "Done" : "Skip"}
-          </span>
-        </button>
+        {/* Work steps get TWO distinct actions: Skip (no log) and Set Complete (log + advance).
+            Rest and prep steps keep a single Skip button — unchanged for rest,
+            teal-tinted for prep to match its own colour rather than rest's purple. */}
+        {isWork ? (
+          <>
+            <button style={S.controlBtnSmMuted} onClick={handleSkipOnly}>
+              <Icon name="skip" size={18} color="#666"/>
+              <span style={{fontSize:10,color:"#666",fontWeight:700}}>Skip</span>
+            </button>
+            <button
+              style={{ ...S.controlBtnSm, background:"#C8F03C1a", border:"1px solid #C8F03C44" }}
+              onClick={handleDone}
+            >
+              <Icon name="check" size={18} color="#C8F03C"/>
+              <span style={{fontSize:10,color:"#C8F03C",fontWeight:700}}>Set Complete</span>
+            </button>
+          </>
+        ) : (
+          <button
+            style={{
+              ...S.controlBtnSm,
+              background: isPrep ? "#5EEAD41a" : "#A78BFA1a",
+              border: isPrep ? "1px solid #5EEAD444" : "1px solid #A78BFA44",
+            }}
+            onClick={handleDone}
+          >
+            <Icon name="skip" size={20} color={isPrep ? "#5EEAD4" : "#A78BFA"}/>
+            <span style={{fontSize:11,color:isPrep ? "#5EEAD4" : "#A78BFA",fontWeight:700}}>Skip</span>
+          </button>
+        )}
       </div>
 
       {/* Next preview */}
@@ -637,6 +898,25 @@ function TimerScreen({ step, secondsLeft, totalSeconds, running, onPlayPause, on
         }}>
           <div style={{fontSize:10,color:"#383840",fontWeight:800,letterSpacing:"0.12em",marginBottom:3}}>COMING UP</div>
           <div style={{fontSize:13,color:"#777",fontWeight:600}}>{step.subLabel}</div>
+        </div>
+      )}
+
+      {/* Swipe hint */}
+      <div style={{marginTop:16, fontSize:11, color:"#252530", fontWeight:600, letterSpacing:"0.06em"}}>
+        ← swipe to skip exercise
+      </div>
+
+      {/* Brief visual confirmation when swipe fires */}
+      {swipeHint && (
+        <div style={{
+          position:"fixed", top:"50%", left:"50%",
+          transform:"translate(-50%,-50%)",
+          background:"rgba(200,240,60,0.15)", border:"1px solid #C8F03C44",
+          borderRadius:16, padding:"12px 24px",
+          color:"#C8F03C", fontSize:13, fontWeight:800,
+          pointerEvents:"none", zIndex:999,
+        }}>
+          Next exercise →
         </div>
       )}
     </div>
@@ -876,8 +1156,11 @@ function SetRow({ setNum, data, onChange, pb }) {
       <div style={S.setChipGrid}>
         <div style={S.chipWrap}>
           <span style={S.inputLabel}>TIME</span>
-          <SuggestChip value={data.loggedTime} suggested={`${data.targetTime}s`}
-            onChange={v=>onChange({...data,loggedTime:v})} color="#60A5FA"/>
+          {/* Editing here sets the PLAN (targetTime) — what the timer will count
+              down during playback. This is distinct from loggedTime, which only
+              gets written live during an active session via the timer screen. */}
+          <SuggestChip value={data.targetTime} suggested="40"
+            onChange={v=>onChange({...data,targetTime:parseInt(v,10)||0})} color="#60A5FA" unit="s"/>
         </div>
         <div style={S.chipWrap}>
           <span style={S.inputLabel}>EFFORT</span>
@@ -886,8 +1169,9 @@ function SetRow({ setNum, data, onChange, pb }) {
         </div>
         <div style={S.chipWrap}>
           <span style={S.inputLabel}>REPS</span>
-          <SuggestChip value={data.loggedReps} suggested={data.targetReps}
-            onChange={v=>onChange({...data,loggedReps:v})} color="#E8E8EC"/>
+          {/* Same as TIME above — this sets targetReps, the plan, not loggedReps. */}
+          <SuggestChip value={data.targetReps} suggested="10"
+            onChange={v=>onChange({...data,targetReps:parseInt(v,10)||0})} color="#E8E8EC"/>
         </div>
         <div style={S.chipWrap}>
           <span style={S.inputLabel}>KG</span>
@@ -1075,6 +1359,97 @@ function LongPressable({ children, previewContent, onTap }) {
   );
 }
 
+// ─── DRAGGABLE BLOCK LIST (tap-hold-and-drag reordering) ─────────────────────
+// Wraps a sequence of blocks. Each block exposes a drag handle (the 6-dot grip
+// in ListSectionHeader); pressing and holding that handle for ~250ms arms the
+// drag, then moving your finger reorders blocks live by swapping past whichever
+// block your finger is currently over. Lifting commits the new order.
+function DraggableBlockList({ order, renderBlock, onReorder }) {
+  const [draggingKey, setDraggingKey] = useState(null);
+  const [dragY, setDragY] = useState(0);
+  const armTimerRef = useRef(null);
+  const startYRef = useRef(0);
+  const rowRefs = useRef({});
+  const orderRef = useRef(order);
+  orderRef.current = order;
+
+  function armDrag(key, clientY) {
+    startYRef.current = clientY;
+    armTimerRef.current = setTimeout(()=>{
+      setDraggingKey(key);
+      setDragY(0);
+    }, 250);
+  }
+  function cancelArm() {
+    clearTimeout(armTimerRef.current);
+  }
+  function handleMove(clientY) {
+    if (!draggingKey) return;
+    const delta = clientY - startYRef.current;
+    setDragY(delta);
+
+    // Find which other block's row centre we've crossed, and swap if so.
+    const myKey = draggingKey;
+    const myEl = rowRefs.current[myKey];
+    if (!myEl) return;
+    const myRect = myEl.getBoundingClientRect();
+    const myCentre = myRect.top + myRect.height/2 + delta;
+
+    for (const otherKey of orderRef.current) {
+      if (otherKey === myKey) continue;
+      const otherEl = rowRefs.current[otherKey];
+      if (!otherEl) continue;
+      const r = otherEl.getBoundingClientRect();
+      const otherCentre = r.top + r.height/2;
+      if (myCentre > r.top && myCentre < r.bottom) {
+        onReorder(myKey, otherKey);
+        startYRef.current = clientY;
+        setDragY(0);
+        break;
+      }
+    }
+  }
+  function handleEnd() {
+    cancelArm();
+    setDraggingKey(null);
+    setDragY(0);
+  }
+
+  return (
+    <>
+      {order.map(key=>(
+        <div
+          key={key}
+          ref={el=>rowRefs.current[key]=el}
+          style={{
+            position:"relative",
+            transform: draggingKey===key ? `translateY(${dragY}px) scale(1.01)` : "none",
+            zIndex: draggingKey===key ? 50 : 1,
+            transition: draggingKey===key ? "none" : "transform 0.15s ease",
+            boxShadow: draggingKey===key ? "0 8px 24px rgba(0,0,0,0.5)" : "none",
+            background: draggingKey===key ? "#0D0D0F" : "none",
+          }}
+          onTouchStartCapture={e=>{}}
+          onTouchMove={e=>{ if(draggingKey===key) handleMove(e.touches[0].clientY); }}
+          onTouchEnd={()=>{ if(draggingKey===key) handleEnd(); }}
+          onMouseMove={e=>{ if(draggingKey===key) handleMove(e.clientY); }}
+          onMouseUp={()=>{ if(draggingKey===key) handleEnd(); }}
+        >
+          {renderBlock(key, {
+            dragHandleProps: {
+              onTouchStart: e=>{ e.stopPropagation(); armDrag(key, e.touches[0].clientY); },
+              onTouchEnd: cancelArm,
+              onMouseDown: e=>{ e.stopPropagation(); armDrag(key, e.clientY); },
+              onMouseUp: cancelArm,
+            },
+            isDragging: draggingKey===key,
+          })}
+        </div>
+      ))}
+    </>
+  );
+}
+
 function ExerciseTile({ phase }) {
   const color = phase==="warmup" ? "#FF6B35" : phase==="cooldown" ? "#A78BFA" : phase==="core" ? "#FFB800" : "#C8F03C";
   const icon  = phase==="warmup" ? "flame" : phase==="cooldown" ? "refresh" : phase==="core" ? "bolt" : "dumbbell";
@@ -1093,13 +1468,14 @@ function ExerciseTile({ phase }) {
 // ─── COLLAPSIBLE EXERCISE ROW (single-scroll list style) ─────────────────────
 function ExerciseListRow({ label, exercise, sets, timings, onExerciseChange, onSetsChange, onTimingsChange, onDelete, history, phase, defaultOpen=false }) {
   const [open, setOpen] = useState(defaultOpen);
+  const [showPicker, setShowPicker] = useState(false);
   const completedSets = sets.filter(s=>s.done).length;
   const firstSet = sets[0] || {};
-  const repPart = (firstSet.targetReps ?? 0) > 1 ? `${firstSet.targetReps} reps · ` : "";
-  const summaryText = sets.length > 1
-    ? `${sets.length}x sets · ${repPart}${firstSet.targetTime ?? 40}s`
-    : `${repPart}${firstSet.targetTime ?? 40}s`;
+  const hasReps = (firstSet.targetReps ?? 0) > 1;
   const stats = calcStats(history[exercise]);
+  const pickerType = phase==="warmup"?"warmup":phase==="cooldown"?"cooldown":phase==="core"?"core":"strength";
+
+  const summaryText = `${sets.length}x sets`;
 
   const previewContent = (
     <div>
@@ -1113,7 +1489,7 @@ function ExerciseListRow({ label, exercise, sets, timings, onExerciseChange, onS
       ) : (
         <div style={{fontSize:13,color:"#666"}}>No history yet for this exercise.</div>
       )}
-      <div style={{marginTop:12,fontSize:12,color:"#555"}}>{summaryText}</div>
+      <div style={{marginTop:12,fontSize:12,color:"#555"}}>{summaryText} · {hasReps?`${firstSet.targetReps} reps · `:""}{firstSet.targetTime ?? 40}s</div>
     </div>
   );
 
@@ -1123,23 +1499,52 @@ function ExerciseListRow({ label, exercise, sets, timings, onExerciseChange, onS
         <LongPressable previewContent={previewContent} onTap={()=>setOpen(o=>!o)}>
           <div style={S.listRow}>
             <ExerciseTile phase={phase}/>
-            <div style={{flex:1, minWidth:0, textAlign:"left"}}>
+
+            {/* TITLE — separate tap target, opens exercise picker to swap */}
+            <button
+              style={S.exTitleTapZone}
+              onClick={e=>{ e.stopPropagation(); setShowPicker(true); }}
+              onTouchStart={e=>e.stopPropagation()}
+              onMouseDown={e=>e.stopPropagation()}
+            >
               <div style={{display:"flex",alignItems:"center",gap:6}}>
                 {label && <span style={{fontSize:10,fontWeight:900,color:"#3a3a44",letterSpacing:"0.1em",flexShrink:0}}>{label}</span>}
                 <span style={{fontSize:15,fontWeight:700,color:"#E8E8EC",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
                   {exercise || "Choose exercise"}
                 </span>
               </div>
-              <div style={{display:"flex",alignItems:"center",gap:6,marginTop:4}}>
-                <span style={S.listRowPill}>{summaryText}</span>
-                {completedSets>0 && (
-                  <span style={{fontSize:11,color:"#C8F03C",fontWeight:700}}>
-                    {completedSets}/{sets.length} done
-                  </span>
-                )}
-              </div>
-            </div>
-            <span style={{display:"flex",transform:open?"rotate(180deg)":"none",transition:"transform 0.2s"}}>
+              {completedSets>0 && (
+                <span style={{fontSize:11,color:"#C8F03C",fontWeight:700,marginTop:4,display:"block"}}>
+                  {completedSets}/{sets.length} done
+                </span>
+              )}
+            </button>
+
+            {/* REPS — separate tap target, opens the set-by-set editor */}
+            {hasReps && (
+              <button
+                style={S.exCountTapZone}
+                onClick={e=>{ e.stopPropagation(); setOpen(true); }}
+                onTouchStart={e=>e.stopPropagation()}
+                onMouseDown={e=>e.stopPropagation()}
+              >
+                <span style={S.exCountValue}>{firstSet.targetReps}</span>
+                <span style={S.exCountLabel}>reps</span>
+              </button>
+            )}
+
+            {/* TIME — separate tap target, opens the set-by-set editor */}
+            <button
+              style={S.exCountTapZone}
+              onClick={e=>{ e.stopPropagation(); setOpen(true); }}
+              onTouchStart={e=>e.stopPropagation()}
+              onMouseDown={e=>e.stopPropagation()}
+            >
+              <span style={S.exCountValue}>{firstSet.targetTime ?? 40}</span>
+              <span style={S.exCountLabel}>sec</span>
+            </button>
+
+            <span style={{display:"flex",transform:open?"rotate(180deg)":"none",transition:"transform 0.2s",flexShrink:0}}>
               <Icon name="chevDown" size={16} color="#555"/>
             </span>
           </div>
@@ -1155,6 +1560,9 @@ function ExerciseListRow({ label, exercise, sets, timings, onExerciseChange, onS
               history={history} phase={phase}
             />
           </div>
+        )}
+        {showPicker && (
+          <ExercisePicker type={pickerType} onSelect={onExerciseChange} onClose={()=>setShowPicker(false)} history={history}/>
         )}
       </div>
     </SwipeToDelete>
@@ -1196,14 +1604,56 @@ function SimpleListRow({ exercise, onExerciseChange, onDelete, history, phase, d
 }
 
 // ─── SECTION HEADER (matches "best time ☀️" style) ────────────────────────────
-function ListSectionHeader({ title, emoji, subtitle }) {
+function ListSectionHeader({ title, emoji, subtitle, editable=false, onTitleChange, onDeleteBlock, dragHandleProps, isDragging=false }) {
+  const [editing, setEditing] = useState(false);
   return (
     <div style={S.listSectionHeader}>
-      <div className="block-display" style={{fontSize:20,color:"#E8E8EC",display:"flex",alignItems:"center",gap:8}}>
-        {title} {emoji && <span style={{fontSize:18}}>{emoji}</span>}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        {editing ? (
+          <input
+            autoFocus
+            className="block-display"
+            style={S.blockTitleInput}
+            value={title}
+            onChange={e=>onTitleChange(e.target.value)}
+            onBlur={()=>setEditing(false)}
+            onKeyDown={e=>{ if(e.key==="Enter") setEditing(false); }}
+          />
+        ) : (
+          <button
+            className="block-display"
+            style={{...S.blockTitleBtn, cursor: editable ? "pointer" : "default"}}
+            onClick={()=>editable && setEditing(true)}
+          >
+            {title} {emoji && <span style={{fontSize:18}}>{emoji}</span>}
+            {editable && <Icon name="edit" size={12} color="rgba(255,255,255,0.3)"/>}
+          </button>
+        )}
+        <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+          {onDeleteBlock && (
+            <button style={S.blockDeleteBtn} onClick={onDeleteBlock}>
+              <Icon name="x" size={14} color="#666"/>
+            </button>
+          )}
+          {dragHandleProps && (
+            <span style={{...S.blockDragHandle, ...(isDragging?S.blockDragHandleActive:{})}} {...dragHandleProps}>
+              <Icon name="dragHandle" size={16} color={isDragging?"#C8F03C":"#444"}/>
+            </span>
+          )}
+        </div>
       </div>
       {subtitle && <div style={{fontSize:12,color:"#555",marginTop:2,fontWeight:600,textTransform:"none",letterSpacing:0}}>{subtitle}</div>}
     </div>
+  );
+}
+
+// ─── ADD EXERCISE ROW (anchored at the bottom of any block) ─────────────────
+function AddExerciseRow({ onAdd, label="Add exercise" }) {
+  return (
+    <button style={S.addExRow} onClick={onAdd}>
+      <span style={S.addExRowIcon}><Icon name="plus" size={14} color="#C8F03C"/></span>
+      <span style={{fontSize:13,fontWeight:700,color:"#C8F03C"}}>{label}</span>
+    </button>
   );
 }
 
@@ -1795,6 +2245,7 @@ const defaultWorkout=()=>({
     { role:"mobility",   exercises:[mkEx("Thoracic Rotation",1,40,3), mkEx("Wall Slides",1,40,3)] },
   ],
   core: [mkEx("Plank",1,40,3), mkEx("Russian Twist",16,45,3), mkEx("Dead Bug",1,40,3)],
+  customBlocks: [],
   cooldown:[
     {name:"Pigeon Pose",done:false},
     {name:"Hamstring Stretch",done:false},
@@ -1834,12 +2285,22 @@ function App() {
   const intervalRef                          = useRef(null);
   const secondsRef                           = useRef(0);
 
+  // Elapsed workout time (counts up, for the timeline display)
+  const [elapsedSeconds,setElapsedSeconds]   = useState(0);
+  const elapsedRef                           = useRef(0);
+
+  // Resume prompt state
+  const [resumePrompt,setResumePrompt]       = useState(null); // null or the saved progress object
+
   useEffect(()=>{
     setHistory(loadHistory());
     setSessions(loadSessions());
     setTemplates(loadTemplates());
     setSavedIds(loadSavedIds());
     setSchedule(loadSchedule());
+    // Check for a paused workout from a previous session
+    const saved = loadProgress();
+    if (saved?.queue?.length) setResumePrompt(saved);
   },[]);
 
   function toggleSaved(id) {
@@ -1856,6 +2317,11 @@ function App() {
   }
 
   function launchTemplate(tpl) {
+    // Warn if there's a paused session that would be overwritten
+    if (loadProgress()?.queue?.length) {
+      if (!window.confirm("You have a workout in progress. Starting a new one will discard your paused session. Continue?")) return;
+      clearProgress();
+    }
     setWorkout(JSON.parse(JSON.stringify(tpl.workout)));
     setActiveWorkoutName(tpl.name);
     setActiveTemplateId(tpl.id);
@@ -1865,6 +2331,10 @@ function App() {
   }
 
   function startBlankWorkout() {
+    if (loadProgress()?.queue?.length) {
+      if (!window.confirm("You have a workout in progress. Starting a new one will discard your paused session. Continue?")) return;
+      clearProgress();
+    }
     setWorkout(defaultWorkout());
     setActiveWorkoutName("CUSTOM WORKOUT");
     setActiveTemplateId(null);
@@ -1879,6 +2349,10 @@ function App() {
     if(running){
       intervalRef.current = setInterval(()=>{
         secondsRef.current -= 1;
+        elapsedRef.current += 1;
+        setElapsedSeconds(elapsedRef.current);
+        const currentStep = queue[queueIdx];
+        if(secondsRef.current === 10 && currentStep?.type === "work") beepTenSecWarning();
         if(secondsRef.current <= 3 && secondsRef.current > 0) beepCountdown();
         if(secondsRef.current <= 0){
           clearInterval(intervalRef.current);
@@ -1897,7 +2371,7 @@ function App() {
     clearInterval(intervalRef.current);
     const step = q[idx];
     if(!step){ setTimerActive(false); return; }
-    const dur = step.type==="work" ? step.work : step.rest;
+    const dur = step.type==="rest" ? step.rest : step.work;
     secondsRef.current = dur;
     setSecondsLeft(dur);
     setTotalSeconds(dur);
@@ -1908,24 +2382,47 @@ function App() {
   function advanceQueue(manual=false) {
     clearInterval(intervalRef.current);
     const step = queue[queueIdx];
-    const isWork = step?.type==="work";
 
-    if(isWork) beepWork(); else beepRest();
+    if (step?.type === "work") beepWork();
+    else if (step?.type === "prep") beepWork();
+    else beepRest();
 
     const next = queueIdx + 1;
     if(next >= queue.length){
       setTimerActive(false);
       setRunning(false);
+      clearProgress(); // workout finished naturally — no saved state needed
       return;
     }
+
+    // Auto-save progress after every step so leaving mid-workout is recoverable.
+    saveProgress({
+      queue,
+      queueIdx: next,
+      secondsLeft: queue[next] ? (queue[next].type==="rest" ? queue[next].rest : queue[next].work) : 0,
+      workout,
+      activeWorkoutName,
+      activeTemplateId,
+      elapsedSeconds: elapsedRef.current,
+    });
+
     startTimer(next, queue);
   }
 
   function launchTimer(workoutOverride) {
+    // If there's a saved session, warn before overwriting it
+    const existing = loadProgress();
+    if (existing?.queue?.length) {
+      // Discard the old session without prompt — caller is explicitly starting a new one.
+      // (The "start new while one paused" warning path is handled separately in the UI.)
+      clearProgress();
+    }
     const q = buildQueue(workoutOverride || workout);
     setQueue(q);
     setTimerActive(true);
     setQueueIdx(0);
+    elapsedRef.current = 0;
+    setElapsedSeconds(0);
     const dur = q[0]?.work || 60;
     secondsRef.current = dur;
     setSecondsLeft(dur);
@@ -1936,6 +2433,47 @@ function App() {
   function handleAddTime(secs) {
     secondsRef.current += secs;
     setSecondsLeft(s=>s+secs);
+  }
+
+  function handleSkipToNextExercise() {
+    const currentLabel = queue[queueIdx]?.label;
+    // Find the first step whose label differs from the current exercise name
+    // and whose type is "prep" (the buffer before the next work step)
+    let nextIdx = queueIdx + 1;
+    while (nextIdx < queue.length) {
+      const s = queue[nextIdx];
+      if (s.label !== currentLabel && (s.type === "prep" || s.type === "work")) break;
+      nextIdx++;
+    }
+    if (nextIdx < queue.length) {
+      clearInterval(intervalRef.current);
+      startTimer(nextIdx, queue);
+    }
+  }
+
+  function resumeWorkout(saved) {
+    setWorkout(saved.workout);
+    setActiveWorkoutName(saved.activeWorkoutName || "CUSTOM WORKOUT");
+    setActiveTemplateId(saved.activeTemplateId || null);
+    setQueue(saved.queue);
+    setQueueIdx(saved.queueIdx);
+    elapsedRef.current = saved.elapsedSeconds || 0;
+    setElapsedSeconds(saved.elapsedSeconds || 0);
+    const dur = saved.secondsLeft || (saved.queue[saved.queueIdx]?.work || 60);
+    secondsRef.current = dur;
+    setSecondsLeft(dur);
+    setTotalSeconds(saved.queue[saved.queueIdx]
+      ? (saved.queue[saved.queueIdx].type==="rest" ? saved.queue[saved.queueIdx].rest : saved.queue[saved.queueIdx].work)
+      : dur);
+    setTimerActive(true);
+    setRunning(false); // paused — user taps play when ready
+    setView("workout");
+    setResumePrompt(null);
+  }
+
+  function discardResume() {
+    clearProgress();
+    setResumePrompt(null);
   }
 
   function handlePlayPause() { setRunning(r=>!r); }
@@ -1982,20 +2520,93 @@ function App() {
   const updateSuperset = (i,ss)  =>setWorkout(w=>({...w,supersets:w.supersets.map((x,j)=>j===i?ss:x)}));
   const updateCoreEx   = (i,ex)  =>setWorkout(w=>({...w,core:(w.core||[]).map((x,j)=>j===i?ex:x)}));
 
-  // Deletion respects the structural minimums: warmup needs 3-5, core/cooldown always exactly 3.
-  const deleteWarmup = (i) => setWorkout(w => {
-    if (w.warmup.length <= 3) { alert("Warm Up needs at least 3 exercises."); return w; }
-    return { ...w, warmup: w.warmup.filter((_,j)=>j!==i) };
-  });
-  const deleteCooldown = (i) => {
-    alert("Cool Down always has exactly 3 exercises — swap it instead of deleting, or edit the exercise list directly.");
-  };
-  const deleteCoreEx = (i) => {
-    alert("Core Circuit always has exactly 3 exercises — swap it instead of deleting.");
-  };
-  const deleteSupersetEx = (si, ei) => {
-    alert("Each superset always has its two exercises — swap one instead of deleting.");
-  };
+  // Deletion is now always free — no minimums enforced. Blocks can shrink to
+  // zero exercises if you want; they just won't contribute steps to the timer.
+  const deleteWarmup     = (i) => setWorkout(w => ({ ...w, warmup: w.warmup.filter((_,j)=>j!==i) }));
+  const deleteCooldown   = (i) => setWorkout(w => ({ ...w, cooldown: w.cooldown.filter((_,j)=>j!==i) }));
+  const deleteCoreEx     = (i) => setWorkout(w => ({ ...w, core: (w.core||[]).filter((_,j)=>j!==i) }));
+  const deleteSupersetEx = (si, ei) => setWorkout(w => ({
+    ...w,
+    supersets: w.supersets.map((ss,j)=> j!==si ? ss : { ...ss, exercises: ss.exercises.filter((_,k)=>k!==ei) }),
+  }));
+
+  // Add a fresh exercise to any block. New exercise starts unnamed so the
+  // picker opens naturally when the person taps its title.
+  const addWarmupEx   = () => setWorkout(w => ({ ...w, warmup: [...w.warmup, { name:"", done:false }] }));
+  const addCooldownEx = () => setWorkout(w => ({ ...w, cooldown: [...w.cooldown, { name:"", done:false }] }));
+  const addCoreEx     = () => setWorkout(w => ({ ...w, core: [...(w.core||[]), mkEx("",8,40,3)] }));
+  const addSupersetEx = (si) => setWorkout(w => ({
+    ...w,
+    supersets: w.supersets.map((ss,j)=> j!==si ? ss : { ...ss, exercises: [...ss.exercises, mkEx("",8,45,3)] }),
+  }));
+
+  // Free-form custom blocks the person adds themselves — no role, user-typed title.
+  const addCustomBlock = () => setWorkout(w => ({
+    ...w,
+    customBlocks: [...(w.customBlocks||[]), { id: `cb${Date.now()}`, title: "New Block", exercises: [mkEx("",8,45,3)] }],
+  }));
+  const updateCustomBlockTitle = (bi, title) => setWorkout(w => ({
+    ...w, customBlocks: (w.customBlocks||[]).map((b,j)=> j!==bi ? b : { ...b, title }),
+  }));
+  const updateCustomBlockEx = (bi, ei, ex) => setWorkout(w => ({
+    ...w, customBlocks: (w.customBlocks||[]).map((b,j)=> j!==bi ? b : { ...b, exercises: b.exercises.map((e,k)=>k!==ei?e:ex) }),
+  }));
+  const addCustomBlockEx = (bi) => setWorkout(w => ({
+    ...w, customBlocks: (w.customBlocks||[]).map((b,j)=> j!==bi ? b : { ...b, exercises: [...b.exercises, mkEx("",8,45,3)] }),
+  }));
+  const deleteCustomBlockEx = (bi, ei) => setWorkout(w => ({
+    ...w, customBlocks: (w.customBlocks||[]).map((b,j)=> j!==bi ? b : { ...b, exercises: b.exercises.filter((_,k)=>k!==ei) }),
+  }));
+  const deleteCustomBlock = (bi) => setWorkout(w => ({
+    ...w, customBlocks: (w.customBlocks||[]).filter((_,j)=>j!==bi),
+  }));
+
+  // Block reordering (tap-hold-and-drag). The underlying data (warmup,
+  // supersets, core, customBlocks, cooldown) is untouched — only the ORDER
+  // they render in is reorderable, tracked as a separate list of block keys.
+  // null means "use the default sequence" so existing workouts need no migration.
+  const [blockOrder, setBlockOrder] = useState(null);
+
+  function defaultBlockOrder(w) {
+    const order = ["warmup"];
+    w.supersets.forEach((_,i)=>order.push(`ss${i}`));
+    order.push("core");
+    (w.customBlocks||[]).forEach(b=>order.push(`cb-${b.id}`));
+    order.push("cooldown");
+    return order;
+  }
+
+  // Resolve the live order, reconciled against current blocks (handles a
+  // block being added/deleted since the order was last set).
+  function resolveBlockOrder() {
+    const base = defaultBlockOrder(workout);
+    if (!blockOrder) return base;
+    const known = new Set(base);
+    const kept = blockOrder.filter(k=>known.has(k));
+    const missing = base.filter(k=>!kept.includes(k));
+    return [...kept, ...missing];
+  }
+
+  function moveBlock(key, direction) {
+    const order = resolveBlockOrder();
+    const i = order.indexOf(key);
+    const j = i + direction;
+    if (i<0 || j<0 || j>=order.length) return;
+    const next = [...order];
+    [next[i], next[j]] = [next[j], next[i]];
+    setBlockOrder(next);
+  }
+
+  function reorderBlocks(fromKey, toKey) {
+    const order = resolveBlockOrder();
+    const fromIdx = order.indexOf(fromKey);
+    const toIdx = order.indexOf(toKey);
+    if (fromIdx<0 || toIdx<0 || fromIdx===toIdx) return;
+    const next = [...order];
+    next.splice(fromIdx,1);
+    next.splice(toIdx,0,fromKey);
+    setBlockOrder(next);
+  }
 
   const countSets=()=>{
     let total=0,done=0;
@@ -2028,6 +2639,7 @@ function App() {
     });
     saveHistory(nh);
     setHistory(nh);
+    clearProgress(); // workout complete — no paused session to resume
     const updatedSessions = logSessionToday(activeWorkoutName);
     setSessions(updatedSessions);
     setSaved(true);
@@ -2052,6 +2664,13 @@ function App() {
   if (view === "home" && !timerActive) {
     return (
       <div style={S.root}>
+        {resumePrompt && (
+          <ResumePrompt
+            saved={resumePrompt}
+            onResume={()=>resumeWorkout(resumePrompt)}
+            onDiscard={discardResume}
+          />
+        )}
         <div style={S.homeHeader}>
           <div style={S.homeLogoRow}>
             <Icon name="bolt" size={20} color="#C8F03C"/>
@@ -2189,7 +2808,23 @@ function App() {
           onLogSet={handleLogSet}
           onLogCoreSet={handleLogCoreSet}
           onLogSimple={handleLogSimple}
-          onExit={()=>{setTimerActive(false);setRunning(false);clearInterval(intervalRef.current);}}
+          queue={queue}
+          queueIdx={queueIdx}
+          elapsedSeconds={elapsedSeconds}
+          onSkipToNextExercise={handleSkipToNextExercise}
+          onExit={()=>{
+            // Save progress when manually exiting mid-workout so it can be resumed later.
+            if (queue.length && queueIdx < queue.length - 1) {
+              saveProgress({
+                queue, queueIdx, secondsLeft,
+                workout, activeWorkoutName, activeTemplateId,
+                elapsedSeconds: elapsedRef.current,
+              });
+            }
+            clearInterval(intervalRef.current);
+            setTimerActive(false);
+            setRunning(false);
+          }}
         />
       </div>
     );
@@ -2200,7 +2835,7 @@ function App() {
   const heroGrad = activeTemplateId
     ? (PHOTO_GRADIENTS[activeWorkoutName] || "linear-gradient(160deg, #1c1c22 0%, #0d0d0f 60%)")
     : "linear-gradient(160deg, #1c1c22 0%, #0d0d0f 60%)";
-  const estDuration = Math.round(buildQueue(workout).reduce((sum,s)=>sum+(s.type==="work"?s.work:s.rest),0)/60);
+  const estDuration = Math.round(buildQueue(workout).reduce((sum,s)=>sum+(s.type==="rest"?s.rest:s.work),0)/60);
 
   return (
     <div style={S.root}>
@@ -2281,74 +2916,141 @@ function App() {
           </div>
         </div>
 
-        {/* WARM UP SECTION */}
-        <ListSectionHeader title="Warm Up" emoji="🔥" subtitle="3 exercises · Activate & prep"/>
-        {workout.warmup.map((item,i)=>(
-          <SimpleListRow key={i} exercise={item.name}
-            onExerciseChange={name=>updateWarmup(i,{...item,name})}
-            onDelete={()=>deleteWarmup(i)}
-            history={history} phase="warmup" done={item.done}
-            onToggle={()=>updateWarmup(i,{...item,done:!item.done})}
-            duration={defaultTimings(item.name).work}/>
-        ))}
+        {/* ALL BLOCKS — order driven by resolveBlockOrder(), reorderable via tap-hold-drag */}
+        <DraggableBlockList
+          order={resolveBlockOrder()}
+          onReorder={reorderBlocks}
+          renderBlock={(key, dragProps) => {
 
-        {/* STRENGTH SECTIONS — one per superset, in fixed role order */}
-        {workout.supersets.map((ss,si)=>{
-          const roleMeta = {
-            major:      { title:"Major Lift",       emoji:"🏋️", sub:"Primary muscle group focus" },
-            peripheral: { title:"Peripheral Work",   emoji:"💪", sub:"Secondary muscle group focus" },
-            mobility:   { title:"Mobility",          emoji:"🤸", sub:"Dynamic movement focus" },
-          }[ss.role] || { title:`Superset ${si+1}`, emoji:"⚡", sub:"" };
-          return (
-            <React.Fragment key={si}>
-              <ListSectionHeader title={roleMeta.title} emoji={roleMeta.emoji}
-                subtitle={`${ss.exercises[0]?.sets?.length || 3} rounds · ${roleMeta.sub}`}/>
-              {ss.exercises.map((ex,ei)=>(
-                <ExerciseListRow key={ei}
-                  label={String.fromCharCode(65+ei)}
-                  exercise={ex.name} sets={ex.sets} timings={ex.timings}
-                  onExerciseChange={n=>{
-                    const d={...ss,exercises:ss.exercises.map((e,i)=>i===ei?{...e,name:n}:e)};
-                    updateSuperset(si,d);
-                  }}
-                  onSetsChange={s=>{
-                    const d={...ss,exercises:ss.exercises.map((e,i)=>i===ei?{...e,sets:s}:e)};
-                    updateSuperset(si,d);
-                  }}
-                  onTimingsChange={t=>{
-                    const d={...ss,exercises:ss.exercises.map((e,i)=>i===ei?{...e,timings:t}:e)};
-                    updateSuperset(si,d);
-                  }}
-                  onDelete={()=>deleteSupersetEx(si,ei)}
-                  history={history} phase="strength"/>
-              ))}
-            </React.Fragment>
-          );
-        })}
+            if (key === "warmup") return (
+              <>
+                <ListSectionHeader title="Warm Up" emoji="🔥"
+                  subtitle={`${workout.warmup.length} exercise${workout.warmup.length!==1?"s":""} · Activate & prep`}
+                  dragHandleProps={dragProps.dragHandleProps} isDragging={dragProps.isDragging}/>
+                {workout.warmup.map((item,i)=>(
+                  <SimpleListRow key={i} exercise={item.name}
+                    onExerciseChange={name=>updateWarmup(i,{...item,name})}
+                    onDelete={()=>deleteWarmup(i)}
+                    history={history} phase="warmup" done={item.done}
+                    onToggle={()=>updateWarmup(i,{...item,done:!item.done})}
+                    duration={defaultTimings(item.name).work}/>
+                ))}
+                <AddExerciseRow onAdd={addWarmupEx}/>
+              </>
+            );
 
-        {/* CORE CIRCUIT SECTION — always exactly 3 exercises */}
-        <ListSectionHeader title="Core Circuit" emoji="🔥" subtitle="3 exercises · Circuit format"/>
-        {(workout.core||[]).map((ex,ci)=>(
-          <ExerciseListRow key={ci}
-            label={`${ci+1}`}
-            exercise={ex.name} sets={ex.sets} timings={ex.timings}
-            onExerciseChange={n=>updateCoreEx(ci,{...ex,name:n})}
-            onSetsChange={s=>updateCoreEx(ci,{...ex,sets:s})}
-            onTimingsChange={t=>updateCoreEx(ci,{...ex,timings:t})}
-            onDelete={()=>deleteCoreEx(ci)}
-            history={history} phase="core"/>
-        ))}
+            if (key === "core") return (
+              <>
+                <ListSectionHeader title="Core Circuit" emoji="🔥"
+                  subtitle={`${(workout.core||[]).length} exercise${(workout.core||[]).length!==1?"s":""} · Circuit format`}
+                  dragHandleProps={dragProps.dragHandleProps} isDragging={dragProps.isDragging}/>
+                {(workout.core||[]).map((ex,ci)=>(
+                  <ExerciseListRow key={ci}
+                    label={`${ci+1}`}
+                    exercise={ex.name} sets={ex.sets} timings={ex.timings}
+                    onExerciseChange={n=>updateCoreEx(ci,{...ex,name:n})}
+                    onSetsChange={s=>updateCoreEx(ci,{...ex,sets:s})}
+                    onTimingsChange={t=>updateCoreEx(ci,{...ex,timings:t})}
+                    onDelete={()=>deleteCoreEx(ci)}
+                    history={history} phase="core"/>
+                ))}
+                <AddExerciseRow onAdd={addCoreEx}/>
+              </>
+            );
 
-        {/* COOL DOWN SECTION */}
-        <ListSectionHeader title="Cool Down" emoji="🧘" subtitle="3 stretches · Release & recover"/>
-        {workout.cooldown.map((item,i)=>(
-          <SimpleListRow key={i} exercise={item.name}
-            onExerciseChange={name=>updateCooldown(i,{...item,name})}
-            onDelete={()=>deleteCooldown(i)}
-            history={history} phase="cooldown" done={item.done}
-            onToggle={()=>updateCooldown(i,{...item,done:!item.done})}
-            duration={defaultTimings(item.name).work}/>
-        ))}
+            if (key === "cooldown") return (
+              <>
+                <ListSectionHeader title="Cool Down" emoji="🧘"
+                  subtitle={`${workout.cooldown.length} stretch${workout.cooldown.length!==1?"es":""} · Release & recover`}
+                  dragHandleProps={dragProps.dragHandleProps} isDragging={dragProps.isDragging}/>
+                {workout.cooldown.map((item,i)=>(
+                  <SimpleListRow key={i} exercise={item.name}
+                    onExerciseChange={name=>updateCooldown(i,{...item,name})}
+                    onDelete={()=>deleteCooldown(i)}
+                    history={history} phase="cooldown" done={item.done}
+                    onToggle={()=>updateCooldown(i,{...item,done:!item.done})}
+                    duration={defaultTimings(item.name).work}/>
+                ))}
+                <AddExerciseRow onAdd={addCooldownEx}/>
+              </>
+            );
+
+            if (key.startsWith("ss")) {
+              const si = parseInt(key.slice(2), 10);
+              const ss = workout.supersets[si];
+              if (!ss) return null;
+              const roleMeta = {
+                major:      { title:"Major Lift",       emoji:"🏋️", sub:"Primary muscle group focus" },
+                peripheral: { title:"Peripheral Work",   emoji:"💪", sub:"Secondary muscle group focus" },
+                mobility:   { title:"Mobility",          emoji:"🤸", sub:"Dynamic movement focus" },
+              }[ss.role] || { title:`Superset ${si+1}`, emoji:"⚡", sub:"" };
+              return (
+                <>
+                  <ListSectionHeader title={roleMeta.title} emoji={roleMeta.emoji}
+                    subtitle={`${ss.exercises.length} exercise${ss.exercises.length!==1?"s":""} · ${roleMeta.sub}`}
+                    dragHandleProps={dragProps.dragHandleProps} isDragging={dragProps.isDragging}/>
+                  {ss.exercises.map((ex,ei)=>(
+                    <ExerciseListRow key={ei}
+                      label={String.fromCharCode(65+ei)}
+                      exercise={ex.name} sets={ex.sets} timings={ex.timings}
+                      onExerciseChange={n=>{
+                        const d={...ss,exercises:ss.exercises.map((e,i)=>i===ei?{...e,name:n}:e)};
+                        updateSuperset(si,d);
+                      }}
+                      onSetsChange={s=>{
+                        const d={...ss,exercises:ss.exercises.map((e,i)=>i===ei?{...e,sets:s}:e)};
+                        updateSuperset(si,d);
+                      }}
+                      onTimingsChange={t=>{
+                        const d={...ss,exercises:ss.exercises.map((e,i)=>i===ei?{...e,timings:t}:e)};
+                        updateSuperset(si,d);
+                      }}
+                      onDelete={()=>deleteSupersetEx(si,ei)}
+                      history={history} phase="strength"/>
+                  ))}
+                  <AddExerciseRow onAdd={()=>addSupersetEx(si)}/>
+                </>
+              );
+            }
+
+            if (key.startsWith("cb-")) {
+              const blockId = key.slice(3);
+              const bi = (workout.customBlocks||[]).findIndex(b=>b.id===blockId);
+              const block = (workout.customBlocks||[])[bi];
+              if (!block) return null;
+              return (
+                <>
+                  <ListSectionHeader title={block.title} emoji="✨" editable
+                    onTitleChange={t=>updateCustomBlockTitle(bi,t)}
+                    onDeleteBlock={()=>deleteCustomBlock(bi)}
+                    subtitle={`${block.exercises.length} exercise${block.exercises.length!==1?"s":""} · Custom block`}
+                    dragHandleProps={dragProps.dragHandleProps} isDragging={dragProps.isDragging}/>
+                  {block.exercises.map((ex,ei)=>(
+                    <ExerciseListRow key={ei}
+                      label={`${ei+1}`}
+                      exercise={ex.name} sets={ex.sets} timings={ex.timings}
+                      onExerciseChange={n=>updateCustomBlockEx(bi,ei,{...ex,name:n})}
+                      onSetsChange={s=>updateCustomBlockEx(bi,ei,{...ex,sets:s})}
+                      onTimingsChange={t=>updateCustomBlockEx(bi,ei,{...ex,timings:t})}
+                      onDelete={()=>deleteCustomBlockEx(bi,ei)}
+                      history={history} phase="strength"/>
+                  ))}
+                  <AddExerciseRow onAdd={()=>addCustomBlockEx(bi)}/>
+                </>
+              );
+            }
+
+            return null;
+          }}
+        />
+
+        {/* ADD BLOCK */}
+        <div style={{padding:"10px 18px 4px"}}>
+          <button style={S.addBlockBtn} onClick={addCustomBlock}>
+            <Icon name="plus" size={15} color="#C8F03C"/>
+            <span>Add Block</span>
+          </button>
+        </div>
 
         {/* COMPLETION / SAVE CARD */}
         <div style={{padding:"24px 18px 0"}}>
@@ -2484,6 +3186,7 @@ const S = {
   logInputLabel:{ fontSize:10,fontWeight:800,color:"#383840",letterSpacing:"0.15em",textAlign:"center" },
   logInput:   { width:"100%",background:"#111115",border:"1px solid #1c1c22",borderRadius:12,padding:"14px 8px",color:"#E8E8EC",fontSize:28,fontWeight:900,fontFamily:"monospace",outline:"none",textAlign:"center" },
   controlBtnSm:{ display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4,width:72,height:72,borderRadius:16,background:"#111115",border:"1px solid #1c1c22",cursor:"pointer",flexShrink:0 },
+  controlBtnSmMuted:{ display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4,width:60,height:72,borderRadius:16,background:"#111115",border:"1px solid #1c1c22",cursor:"pointer",flexShrink:0 },
   controlBtnLg:{ display:"flex",alignItems:"center",justifyContent:"center",flex:1,height:80,borderRadius:20,cursor:"pointer",flexShrink:0,transition:"all 0.15s" },
 
   // Calendar module
@@ -2536,11 +3239,23 @@ const S = {
   swipeDeleteBtn:    { display:"flex", flexDirection:"column", alignItems:"center", gap:3, background:"none", border:"none", cursor:"pointer", width:"100%", height:"100%", justifyContent:"center" },
   previewCard:       { background:"#15151a", border:"1px solid #252530", borderRadius:18, padding:"20px", maxWidth:340, width:"88%", margin:"0 auto" },
   previewCloseBtn:   { marginTop:14, width:"100%", padding:"11px", borderRadius:10, background:"#1f1f26", border:"1px solid #2a2a34", color:"#aaa", fontSize:13, fontWeight:700, cursor:"pointer" },
-  listRow:         { display:"flex", alignItems:"center", gap:12, padding:"12px 18px", width:"100%", background:"none", border:"none", cursor:"pointer", textAlign:"left" },
+  listRow:         { display:"flex", alignItems:"center", gap:10, padding:"12px 18px", width:"100%", background:"none", border:"none", textAlign:"left" },
   listRowPill:     { fontSize:11, fontWeight:700, color:"#888", background:"#1a1a1f", padding:"3px 9px", borderRadius:8 },
+  exTitleTapZone:  { flex:1, minWidth:0, textAlign:"left", background:"none", border:"none", cursor:"pointer", padding:"4px 2px" },
+  exCountTapZone:  { display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:1, background:"#15151a", border:"1px solid #232329", borderRadius:9, padding:"6px 10px", cursor:"pointer", flexShrink:0, minWidth:44 },
+  exCountValue:    { fontSize:14, fontWeight:800, color:"#E8E8EC", fontFamily:"monospace", lineHeight:1 },
+  exCountLabel:    { fontSize:8, fontWeight:800, color:"#555", letterSpacing:"0.08em", textTransform:"uppercase", lineHeight:1, marginTop:1 },
   listRowCheck:    { width:30, height:30, borderRadius:8, flexShrink:0, background:"#1a1a1f", border:"1px solid #252530", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer" },
   listRowCheckActive: { background:"#C8F03C", border:"1px solid #C8F03C" },
   listSectionHeader: { display:"flex", flexDirection:"column", padding:"22px 18px 14px" },
+  blockTitleBtn:   { background:"none", border:"none", padding:0, fontSize:20, color:"#E8E8EC", display:"flex", alignItems:"center", gap:8 },
+  blockTitleInput: { background:"rgba(255,255,255,0.06)", border:"1px dashed rgba(255,255,255,0.25)", borderRadius:8, fontSize:18, color:"#E8E8EC", padding:"4px 10px", outline:"none", width:"70%" },
+  blockDeleteBtn:  { width:26, height:26, borderRadius:7, background:"#1a1a1f", border:"1px solid #252530", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer" },
+  blockDragHandle: { display:"flex", alignItems:"center", justifyContent:"center", cursor:"grab", padding:4, touchAction:"none" },
+  blockDragHandleActive: { background:"#C8F03C1a", borderRadius:6 },
+  addExRow:        { display:"flex", alignItems:"center", gap:8, padding:"11px 18px", background:"none", border:"none", cursor:"pointer", width:"100%" },
+  addExRowIcon:    { width:22, height:22, borderRadius:6, background:"#C8F03C16", border:"1px dashed #C8F03C55", display:"flex", alignItems:"center", justifyContent:"center" },
+  addBlockBtn:     { display:"flex", alignItems:"center", justifyContent:"center", gap:8, width:"100%", padding:"13px", borderRadius:12, background:"#111115", border:"1px dashed #2a2a34", color:"#C8F03C", fontSize:13, fontWeight:800, cursor:"pointer" },
 
   // Workout detail header (hero style, matches screenshot)
   detailHero:      { position:"relative", padding:"54px 18px 22px", overflow:"hidden" },
