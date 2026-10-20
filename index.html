@@ -44,14 +44,14 @@
   /* Press feedback: quick scale-down on touch, spring back on release.
      Applied to any tappable surface via .press-scale. */
   .press-scale {
-    transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1);
+    transition: transform 0.22s cubic-bezier(0.33, 1.3, 0.45, 1);
     -webkit-tap-highlight-color: transparent;
   }
   .press-scale:active { transform: scale(0.96); }
 
   /* Smaller buttons get a subtler squeeze so they don't look rubbery */
   .press-scale-sm {
-    transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1);
+    transition: transform 0.18s cubic-bezier(0.33, 1.3, 0.45, 1);
     -webkit-tap-highlight-color: transparent;
   }
   .press-scale-sm:active { transform: scale(0.92); }
@@ -61,21 +61,21 @@
     0%   { opacity: 0; transform: translateX(28px) scale(0.985); }
     100% { opacity: 1; transform: translateX(0)    scale(1); }
   }
-  .page-push { animation: page-push-in 0.3s cubic-bezier(0.22, 0.9, 0.3, 1) both; }
+  .page-push { animation: page-push-in 0.36s cubic-bezier(0.25, 0.8, 0.25, 1) both; }
 
   /* Page pop: returning view eases back from the left */
   @keyframes page-pop-in {
     0%   { opacity: 0; transform: translateX(-22px) scale(0.99); }
     100% { opacity: 1; transform: translateX(0)     scale(1); }
   }
-  .page-pop { animation: page-pop-in 0.28s cubic-bezier(0.22, 0.9, 0.3, 1) both; }
+  .page-pop { animation: page-pop-in 0.34s cubic-bezier(0.25, 0.8, 0.25, 1) both; }
 
   /* Modal sheets rise from the bottom with a slight overshoot */
   @keyframes sheet-rise {
     0%   { opacity: 0; transform: translateY(40px); }
     100% { opacity: 1; transform: translateY(0); }
   }
-  .sheet-rise { animation: sheet-rise 0.32s cubic-bezier(0.22, 1.1, 0.36, 1) both; }
+  .sheet-rise { animation: sheet-rise 0.38s cubic-bezier(0.25, 1.02, 0.3, 1) both; }
 
   @media (prefers-reduced-motion: reduce) {
     .press-scale, .press-scale-sm { transition: none; }
@@ -134,13 +134,17 @@
 
   @keyframes swipe-hint {
     0%, 100% { transform: translateX(0); }
-    50% { transform: translateX(-6px); }
+    50% { transform: translateX(-9px); }
   }
-  .swipe-hint { animation: swipe-hint 1.6s ease-in-out infinite; }
+  .swipe-hint { animation: swipe-hint 2s cubic-bezier(0.45, 0, 0.55, 1) infinite; }
 
   .carousel-track {
-    display: flex; gap: 12.3px; overflow-x: auto; scroll-snap-type: x mandatory;
-    padding: 0 25px 4px; -webkit-overflow-scrolling: touch; scrollbar-width: none;
+    display: flex; gap: 14.8px; overflow-x: auto;
+    scroll-snap-type: x proximity;   /* proximity, not mandatory — less abrupt */
+    scroll-behavior: smooth;
+    scroll-padding-left: 25px;       /* snapped cards land on the 25px gutter */
+    padding: 0 25px 4px;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
   }
   .carousel-track::-webkit-scrollbar { display: none; }
   .carousel-card {
@@ -3525,10 +3529,10 @@ const S = {
   hSectionHead:  { display:"flex", alignItems:"center", justifyContent:"space-between",
                    marginTop:24, marginBottom:15 },
   hSectionLabel: { fontSize:20, color:TXT, lineHeight:1 },
-  cardTitle:     { fontSize:30.9, lineHeight:0.9, color:TXT, textAlign:"center", width:"100%" },
-  cardMeta:      { fontSize:22.5, color:TXT, textAlign:"center", marginTop:6.3, lineHeight:1 },
-  cardStartPill: { marginTop:6.3, padding:"7.5px 28.8px", borderRadius:23.9, background:"transparent",
-                   border:"0.96px solid "+ACCENT, color:TXT, fontSize:19.1, cursor:"pointer",
+  cardTitle:     { fontSize:37.1, lineHeight:0.9, color:TXT, textAlign:"center", width:"100%" },
+  cardMeta:      { fontSize:27, color:TXT, textAlign:"center", marginTop:7.6, lineHeight:1 },
+  cardStartPill: { marginTop:7.6, padding:"9px 34.6px", borderRadius:28.7, background:"transparent",
+                   border:"1.15px solid "+ACCENT, color:TXT, fontSize:22.9, cursor:"pointer",
                    lineHeight:1 },
   allWkRow:      { display:"flex", alignItems:"center", gap:12, padding:"10px", borderRadius:13,
                    background:"#0e0e12", border:"1px solid #1c1c22", cursor:"pointer", width:"100%" },
@@ -3545,10 +3549,10 @@ const S = {
 
 
   // Card: 153.76 × 199.56, r21.81, 1.09px #3f3f3f, 9.8px gap
-  workoutCard:   { width:188, height:250, borderRadius:27.3, position:"relative",
-                   overflow:"hidden", border:"1.36px solid #3f3f3f", cursor:"pointer",
+  workoutCard:   { width:226, height:300, borderRadius:32.8, position:"relative",
+                   overflow:"hidden", border:"1.63px solid #3f3f3f", cursor:"pointer",
                    flexShrink:0, display:"flex", flexDirection:"column",
-                   alignItems:"center", justifyContent:"flex-end", padding:"0 25px 20px" },
+                   alignItems:"center", justifyContent:"flex-end", padding:"0 30px 24px" },
 
   // Calendar card: 1px #5e5e5e, r8, 11/13 padding
   calCard:       { border:"1px solid #5e5e5e", borderRadius:8, padding:"13px 11px" },
