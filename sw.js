@@ -1,5 +1,6 @@
 // Vitality service worker
-// v3 — the HTML document is now network-first.
+// v4 — cache bumped for the redesigned workout screen; the HTML document
+// stays network-first.
 //
 // v2 was cache-first for everything, so once index.html was cached the app
 // never checked the network again: a new build only appeared if you deleted
@@ -7,7 +8,7 @@
 // falls back to cache when offline, while static assets (icons, manifest)
 // stay cache-first since they rarely change.
 
-const CACHE = "vitality-v3";
+const CACHE = "vitality-v4";
 const ASSETS = [
   "./",
   "./index.html",
