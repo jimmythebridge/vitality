@@ -140,15 +140,19 @@
 
   .carousel-track {
     display: flex; gap: 14.8px; overflow-x: auto;
-    scroll-snap-type: x proximity;   /* proximity, not mandatory — less abrupt */
-    scroll-behavior: smooth;
-    scroll-padding-left: 25px;       /* snapped cards land on the 25px gutter */
-    padding: 0 25px 4px;
+    /* No container padding and no scroll-snap here on purpose.
+       scroll-snap-align:start snaps the first item flush to the scrollport
+       edge and eats the container's padding-left (scroll-padding-left is
+       unreliable on iOS Safari). Flex-item margins can't be consumed that
+       way, so the gutter lives on the first/last children instead. */
+    padding: 0 0 4px;
     -webkit-overflow-scrolling: touch; scrollbar-width: none;
   }
+  .carousel-track > * { flex-shrink: 0; }
+  .carousel-track > :first-child { margin-left: 25px; }
+  .carousel-track > :last-child  { margin-right: 25px; }
   .carousel-track::-webkit-scrollbar { display: none; }
   .carousel-card {
-    scroll-snap-align: start;
     flex-shrink: 0;
   }
 </style>
@@ -2150,7 +2154,7 @@ function TagBrowseRow({ onSelectTag }) {
   const allTags = [...DEFAULT_TAGS, ...customTags];
 
   return (
-    <div className="carousel-track" style={{padding:"4px 25px 4px"}}>
+    <div className="carousel-track" style={{padding:"4px 0 4px"}}>
       {allTags.map(tag=>{
         const color = tagColorFor(tag.label);
         return (
