@@ -139,7 +139,7 @@
   .swipe-hint { animation: swipe-hint 1.6s ease-in-out infinite; }
 
   .carousel-track {
-    display: flex; gap: 9.8px; overflow-x: auto; scroll-snap-type: x mandatory;
+    display: flex; gap: 12.3px; overflow-x: auto; scroll-snap-type: x mandatory;
     padding: 0 25px 4px; -webkit-overflow-scrolling: touch; scrollbar-width: none;
   }
   .carousel-track::-webkit-scrollbar { display: none; }
@@ -2146,7 +2146,7 @@ function TagBrowseRow({ onSelectTag }) {
   const allTags = [...DEFAULT_TAGS, ...customTags];
 
   return (
-    <div className="carousel-track" style={{padding:"4px 18px 4px"}}>
+    <div className="carousel-track" style={{padding:"4px 25px 4px"}}>
       {allTags.map(tag=>{
         const color = tagColorFor(tag.label);
         return (
@@ -3525,10 +3525,10 @@ const S = {
   hSectionHead:  { display:"flex", alignItems:"center", justifyContent:"space-between",
                    marginTop:24, marginBottom:15 },
   hSectionLabel: { fontSize:20, color:TXT, lineHeight:1 },
-  cardTitle:     { fontSize:24.7, lineHeight:0.9, color:TXT, textAlign:"center", width:"100%" },
-  cardMeta:      { fontSize:18, color:TXT, textAlign:"center", marginTop:5, lineHeight:1 },
-  cardStartPill: { marginTop:5, padding:"6px 23px", borderRadius:19.1, background:"transparent",
-                   border:"0.77px solid "+ACCENT, color:TXT, fontSize:15.3, cursor:"pointer",
+  cardTitle:     { fontSize:30.9, lineHeight:0.9, color:TXT, textAlign:"center", width:"100%" },
+  cardMeta:      { fontSize:22.5, color:TXT, textAlign:"center", marginTop:6.3, lineHeight:1 },
+  cardStartPill: { marginTop:6.3, padding:"7.5px 28.8px", borderRadius:23.9, background:"transparent",
+                   border:"0.96px solid "+ACCENT, color:TXT, fontSize:19.1, cursor:"pointer",
                    lineHeight:1 },
   allWkRow:      { display:"flex", alignItems:"center", gap:12, padding:"10px", borderRadius:13,
                    background:"#0e0e12", border:"1px solid #1c1c22", cursor:"pointer", width:"100%" },
@@ -3545,10 +3545,10 @@ const S = {
 
 
   // Card: 153.76 × 199.56, r21.81, 1.09px #3f3f3f, 9.8px gap
-  workoutCard:   { width:150, height:200, borderRadius:21.8, position:"relative",
-                   overflow:"hidden", border:"1.09px solid #3f3f3f", cursor:"pointer",
+  workoutCard:   { width:188, height:250, borderRadius:27.3, position:"relative",
+                   overflow:"hidden", border:"1.36px solid #3f3f3f", cursor:"pointer",
                    flexShrink:0, display:"flex", flexDirection:"column",
-                   alignItems:"center", justifyContent:"flex-end", padding:"0 20px 16px" },
+                   alignItems:"center", justifyContent:"flex-end", padding:"0 25px 20px" },
 
   // Calendar card: 1px #5e5e5e, r8, 11/13 padding
   calCard:       { border:"1px solid #5e5e5e", borderRadius:8, padding:"13px 11px" },
