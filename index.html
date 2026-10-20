@@ -464,7 +464,7 @@ function buildQueue(workout, blockOrder) {
     if (key === "warmup") {
       workout.warmup.forEach((item, i) => {
         if (!item.name) return;
-        const t = defaultTimings(item.name, "warmup");
+        const t = item.timings || defaultTimings(item.name, "warmup");
         const nextLabel = workout.warmup[i+1]?.name || "First exercise";
         pushWork("warmup", { id: id++, phase:"warmup", label: item.name, subLabel:"Warm-up", exerciseKey:`warmup-${i}`, setIndex:0, targetReps:1, work:t.work, rest:t.rest });
         pushRest("warmup", { id: id++, phase:"warmup", label:"Rest", subLabel:`Next: ${nextLabel}`, exerciseKey:`warmup-${i}`, setIndex:0, work:t.work, rest:t.rest });
@@ -476,7 +476,7 @@ function buildQueue(workout, blockOrder) {
     if (key === "cooldown") {
       workout.cooldown.forEach((item, i) => {
         if (!item.name) return;
-        const t = defaultTimings(item.name, "cooldown");
+        const t = item.timings || defaultTimings(item.name, "cooldown");
         pushWork("cooldown", { id: id++, phase:"cooldown", label: item.name, subLabel:"Cool-down stretch", exerciseKey:`cd-${i}`, setIndex:0, targetReps:1, work:t.work, rest:t.rest });
         if (i < workout.cooldown.length - 1) {
           pushRest("cooldown", { id: id++, phase:"cooldown", label:"Rest", subLabel:`Next: ${workout.cooldown[i+1]?.name}`, exerciseKey:`cd-${i}`, setIndex:0, work:t.work, rest:t.rest });
@@ -1450,6 +1450,78 @@ function LongPressable({ children, previewContent, onTap }) {
   );
 }
 
+// ─── DRAGGABLE EXERCISE LIST (reorder within a block) ────────────────────────
+// Press and hold an exercise's icon tile for ~250ms to arm the drag, then move
+// up or down. Uses the tile specifically so it can't conflict with the row's
+// existing swipe-to-delete and long-press-preview gestures.
+function DraggableList({ count, onReorder, renderItem }) {
+  const [dragIdx, setDragIdx] = useState(null);
+  const [dragY, setDragY] = useState(0);
+  const armRef = useRef(null);
+  const startYRef = useRef(0);
+  const rowRefs = useRef({});
+
+  function arm(i, clientY) {
+    startYRef.current = clientY;
+    armRef.current = setTimeout(()=>{ setDragIdx(i); setDragY(0); }, 250);
+  }
+  const cancelArm = () => clearTimeout(armRef.current);
+
+  function move(clientY) {
+    if (dragIdx === null) return;
+    setDragY(clientY - startYRef.current);
+    const me = rowRefs.current[dragIdx];
+    if (!me) return;
+    const r = me.getBoundingClientRect();
+    const centre = r.top + r.height/2 + (clientY - startYRef.current);
+    for (let j = 0; j < count; j++) {
+      if (j === dragIdx) continue;
+      const el = rowRefs.current[j];
+      if (!el) continue;
+      const o = el.getBoundingClientRect();
+      if (centre > o.top && centre < o.bottom) {
+        onReorder(dragIdx, j);
+        setDragIdx(j);
+        startYRef.current = clientY;
+        setDragY(0);
+        break;
+      }
+    }
+  }
+  function end() { cancelArm(); setDragIdx(null); setDragY(0); }
+
+  return (
+    <>
+      {Array.from({length:count}, (_,i)=>(
+        <div key={i} ref={el=>rowRefs.current[i]=el}
+          style={{
+            position:"relative",
+            zIndex: dragIdx===i ? 40 : 1,
+            transform: dragIdx===i ? `translateY(${dragY}px) scale(1.015)` : "none",
+            transition: dragIdx===i ? "none" : "transform 0.16s ease",
+            boxShadow: dragIdx===i ? "0 10px 26px rgba(0,0,0,0.55)" : "none",
+            background: dragIdx===i ? "#000" : "transparent",
+          }}
+          onTouchMove={e=>{ if(dragIdx===i) move(e.touches[0].clientY); }}
+          onTouchEnd={()=>{ if(dragIdx===i) end(); }}
+          onMouseMove={e=>{ if(dragIdx===i) move(e.clientY); }}
+          onMouseUp={()=>{ if(dragIdx===i) end(); }}
+        >
+          {renderItem(i, {
+            isDragging: dragIdx===i,
+            dragHandleProps: {
+              onTouchStart: e=>{ e.stopPropagation(); arm(i, e.touches[0].clientY); },
+              onTouchEnd: cancelArm,
+              onMouseDown: e=>{ e.stopPropagation(); arm(i, e.clientY); },
+              onMouseUp: cancelArm,
+            },
+          })}
+        </div>
+      ))}
+    </>
+  );
+}
+
 // ─── DRAGGABLE BLOCK LIST (tap-hold-and-drag reordering) ─────────────────────
 // Wraps a sequence of blocks. Each block exposes a drag handle (the 6-dot grip
 // in ListSectionHeader); pressing and holding that handle for ~250ms arms the
@@ -1557,7 +1629,7 @@ function ExerciseTile({ phase }) {
 }
 
 // ─── COLLAPSIBLE EXERCISE ROW (single-scroll list style) ─────────────────────
-function ExerciseListRow({ label, exercise, sets, timings, onExerciseChange, onSetsChange, onTimingsChange, onDelete, history, phase, defaultOpen=false }) {
+function ExerciseListRow({ label, exercise, sets, timings, onExerciseChange, onSetsChange, onTimingsChange, onDelete, history, phase, defaultOpen=false, dragHandleProps, isDragging=false }) {
   const [open, setOpen] = useState(defaultOpen);
   const [showPicker, setShowPicker] = useState(false);
   const completedSets = sets.filter(s=>s.done).length;
@@ -1589,7 +1661,9 @@ function ExerciseListRow({ label, exercise, sets, timings, onExerciseChange, onS
       <div style={S.listRowWrap}>
         <LongPressable previewContent={previewContent} onTap={()=>setOpen(o=>!o)}>
           <div style={S.listRow}>
-            <ExerciseTile phase={phase}/>
+            <span style={{...S.exDragHandle, ...(isDragging?{opacity:1}:{})}} {...dragHandleProps}>
+              <ExerciseTile phase={phase}/>
+            </span>
 
             {/* TITLE — separate tap target, opens exercise picker to swap */}
             <button
@@ -1620,7 +1694,7 @@ function ExerciseListRow({ label, exercise, sets, timings, onExerciseChange, onS
             >
               <input
                 style={S.exCountInput}
-                type="number" inputMode="numeric"
+                type="number" inputMode="numeric" size={2} maxLength={3}
                 value={firstSet.targetReps ?? ""}
                 placeholder="—"
                 onChange={e=>{
@@ -1640,7 +1714,7 @@ function ExerciseListRow({ label, exercise, sets, timings, onExerciseChange, onS
             >
               <input
                 style={S.exCountInput}
-                type="number" inputMode="numeric"
+                type="number" inputMode="numeric" size={2} maxLength={3}
                 value={firstSet.targetTime ?? ""}
                 placeholder="—"
                 onChange={e=>{
@@ -1677,15 +1751,18 @@ function ExerciseListRow({ label, exercise, sets, timings, onExerciseChange, onS
 }
 
 // ─── COLLAPSIBLE SIMPLE ROW (warmup/cooldown, single-scroll style) ───────────
-function SimpleListRow({ exercise, onExerciseChange, onDelete, history, phase, done, onToggle, duration=30 }) {
+function SimpleListRow({ exercise, onExerciseChange, onDelete, history, phase, done, onToggle,
+                         duration=30, onDurationChange, dragHandleProps, isDragging=false }) {
   const [showPicker, setShowPicker] = useState(false);
   return (
     <SwipeToDelete onDelete={onDelete} disabled={!onDelete}>
       <div style={S.listRowWrap}>
         <div style={S.listRow}>
-          <ExerciseTile phase={phase}/>
-          <button style={{flex:1, minWidth:0, textAlign:"left", background:"none", border:"none", cursor:"pointer", padding:0}}
-            onClick={()=>setShowPicker(true)}>
+          <span style={{...S.exDragHandle, ...(isDragging?{opacity:1}:{})}} {...dragHandleProps}>
+            <ExerciseTile phase={phase}/>
+          </span>
+
+          <button style={S.exTitleTapZone} onClick={()=>setShowPicker(true)}>
             <div style={{
               fontSize:15, fontWeight:700, color:"#E8E8EC",
               whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis",
@@ -1693,14 +1770,23 @@ function SimpleListRow({ exercise, onExerciseChange, onDelete, history, phase, d
             }}>
               {exercise || "Choose exercise"}
             </div>
-            <div style={{marginTop:4}}>
-              <span style={S.listRowPill}>{duration} sec</span>
-            </div>
           </button>
-          <button
-            style={{...S.listRowCheck, ...(done?S.listRowCheckActive:{})}}
-            onClick={onToggle}
-          >
+
+          {/* Editable seconds — warm-up and cool-down items are timed too */}
+          <div style={S.exCountTapZone}
+            onTouchStart={e=>e.stopPropagation()}
+            onMouseDown={e=>e.stopPropagation()}
+            onClick={e=>e.stopPropagation()}>
+            <input
+              style={S.exCountInput}
+              type="number" inputMode="numeric" size={2} maxLength={3}
+              value={duration}
+              onChange={e=>onDurationChange && onDurationChange(parseInt(e.target.value,10)||0)}
+            />
+            <span style={S.exCountLabel}>sec</span>
+          </div>
+
+          <button style={{...S.listRowCheck, ...(done?S.listRowCheckActive:{})}} onClick={onToggle}>
             <Icon name="check" size={14} color={done?"#0D0D0F":"#333"}/>
           </button>
         </div>
@@ -2757,13 +2843,36 @@ function App() {
   const updateSuperset = (i,ss)  =>setWorkout(w=>({...w,supersets:w.supersets.map((x,j)=>j===i?ss:x)}));
   const updateCoreEx   = (i,ex)  =>setWorkout(w=>({...w,core:(w.core||[]).map((x,j)=>j===i?ex:x)}));
 
+  // Move an item within an array (used by every reorder handler below)
+  const arrMove = (arr, from, to) => {
+    const next = [...arr];
+    const [it] = next.splice(from, 1);
+    next.splice(to, 0, it);
+    return next;
+  };
+
+  const reorderWarmup   = (f,t)=>setWorkout(w=>({...w, warmup: arrMove(w.warmup,f,t)}));
+  const reorderCooldown = (f,t)=>setWorkout(w=>({...w, cooldown: arrMove(w.cooldown,f,t)}));
+  const reorderCore     = (f,t)=>setWorkout(w=>({...w, core: arrMove(w.core||[],f,t)}));
+  const reorderSupersetEx = (si,f,t)=>setWorkout(w=>({...w,
+    supersets: w.supersets.map((ss,j)=>j!==si?ss:{...ss, exercises: arrMove(ss.exercises,f,t)})}));
+  const reorderCustomEx = (bi,f,t)=>setWorkout(w=>({...w,
+    customBlocks:(w.customBlocks||[]).map((b,j)=>j!==bi?b:{...b, exercises: arrMove(b.exercises,f,t)})}));
+
+  // Warm-up / cool-down items carry their own optional timings override.
+  const setWarmupDuration = (i,secs)=>setWorkout(w=>({...w, warmup: w.warmup.map((x,j)=>
+    j!==i?x:{...x, timings:{work:secs, rest:x.timings?.rest ?? 10}})}));
+  const setCooldownDuration = (i,secs)=>setWorkout(w=>({...w, cooldown: w.cooldown.map((x,j)=>
+    j!==i?x:{...x, timings:{work:secs, rest:x.timings?.rest ?? 10}})}));
+
   // Apply block-level default settings to ALL exercises in that block at once.
   function applyBlockSettings(blockKey, {workTime, restTime, sets: setCount, reps}) {
     const newSets = Array.from({length:setCount}, () => makeSet(reps, workTime));
     const applyTimings = {work:workTime, rest:restTime};
     setWorkout(w => {
-      if (blockKey === "warmup") return {...w, warmup: w.warmup.map(x=>({...x}))};
-      if (blockKey === "cooldown") return {...w, cooldown: w.cooldown.map(x=>({...x}))};
+      // Warm-up / cool-down have no sets — apply the work & rest time to each item.
+      if (blockKey === "warmup")   return {...w, warmup:   w.warmup.map(x=>({...x, timings:applyTimings}))};
+      if (blockKey === "cooldown") return {...w, cooldown: w.cooldown.map(x=>({...x, timings:applyTimings}))};
       if (blockKey === "core") return {...w, core:(w.core||[]).map(ex=>({...ex, sets:[...newSets], timings:applyTimings}))};
       if (blockKey.startsWith("ss")) {
         const si = parseInt(blockKey.slice(2),10);
@@ -3219,14 +3328,20 @@ function App() {
                   onBlockSettings={settings=>applyBlockSettings("warmup",settings)}
                   onDeleteBlock={()=>deleteNamedBlock("warmup")}
                   dragHandleProps={dragProps.dragHandleProps} isDragging={dragProps.isDragging}/>
-                {workout.warmup.map((item,i)=>(
-                  <SimpleListRow key={i} exercise={item.name}
-                    onExerciseChange={name=>updateWarmup(i,{...item,name})}
-                    onDelete={()=>deleteWarmup(i)}
-                    history={history} phase="warmup" done={item.done}
-                    onToggle={()=>updateWarmup(i,{...item,done:!item.done})}
-                    duration={defaultTimings(item.name,"warmup").work}/>
-                ))}
+                <DraggableList count={workout.warmup.length} onReorder={reorderWarmup}
+                  renderItem={(i,dp)=>{
+                    const item = workout.warmup[i];
+                    return (
+                      <SimpleListRow exercise={item.name}
+                        onExerciseChange={name=>updateWarmup(i,{...item,name})}
+                        onDelete={()=>deleteWarmup(i)}
+                        history={history} phase="warmup" done={item.done}
+                        onToggle={()=>updateWarmup(i,{...item,done:!item.done})}
+                        duration={item.timings?.work ?? defaultTimings(item.name,"warmup").work}
+                        onDurationChange={secs=>setWarmupDuration(i,secs)}
+                        dragHandleProps={dp.dragHandleProps} isDragging={dp.isDragging}/>
+                    );
+                  }}/>
                 <AddExerciseRow onAdd={addWarmupEx}/>
               </>
             );
@@ -3238,16 +3353,20 @@ function App() {
                   onBlockSettings={settings=>applyBlockSettings("core",settings)}
                   onDeleteBlock={()=>deleteNamedBlock("core")}
                   dragHandleProps={dragProps.dragHandleProps} isDragging={dragProps.isDragging}/>
-                {(workout.core||[]).map((ex,ci)=>(
-                  <ExerciseListRow key={ci}
-                    label={`${ci+1}`}
-                    exercise={ex.name} sets={ex.sets} timings={ex.timings}
-                    onExerciseChange={n=>updateCoreEx(ci,{...ex,name:n})}
-                    onSetsChange={s=>updateCoreEx(ci,{...ex,sets:s})}
-                    onTimingsChange={t=>updateCoreEx(ci,{...ex,timings:t})}
-                    onDelete={()=>deleteCoreEx(ci)}
-                    history={history} phase="core"/>
-                ))}
+                <DraggableList count={(workout.core||[]).length} onReorder={reorderCore}
+                  renderItem={(ci,dp)=>{
+                    const ex = workout.core[ci];
+                    return (
+                      <ExerciseListRow label={`${ci+1}`}
+                        exercise={ex.name} sets={ex.sets} timings={ex.timings}
+                        onExerciseChange={n=>updateCoreEx(ci,{...ex,name:n})}
+                        onSetsChange={v=>updateCoreEx(ci,{...ex,sets:v})}
+                        onTimingsChange={t=>updateCoreEx(ci,{...ex,timings:t})}
+                        onDelete={()=>deleteCoreEx(ci)}
+                        history={history} phase="core"
+                        dragHandleProps={dp.dragHandleProps} isDragging={dp.isDragging}/>
+                    );
+                  }}/>
                 <AddExerciseRow onAdd={addCoreEx}/>
               </>
             );
@@ -3259,14 +3378,20 @@ function App() {
                   onBlockSettings={settings=>applyBlockSettings("cooldown",settings)}
                   onDeleteBlock={()=>deleteNamedBlock("cooldown")}
                   dragHandleProps={dragProps.dragHandleProps} isDragging={dragProps.isDragging}/>
-                {workout.cooldown.map((item,i)=>(
-                  <SimpleListRow key={i} exercise={item.name}
-                    onExerciseChange={name=>updateCooldown(i,{...item,name})}
-                    onDelete={()=>deleteCooldown(i)}
-                    history={history} phase="cooldown" done={item.done}
-                    onToggle={()=>updateCooldown(i,{...item,done:!item.done})}
-                    duration={defaultTimings(item.name,"cooldown").work}/>
-                ))}
+                <DraggableList count={workout.cooldown.length} onReorder={reorderCooldown}
+                  renderItem={(i,dp)=>{
+                    const item = workout.cooldown[i];
+                    return (
+                      <SimpleListRow exercise={item.name}
+                        onExerciseChange={name=>updateCooldown(i,{...item,name})}
+                        onDelete={()=>deleteCooldown(i)}
+                        history={history} phase="cooldown" done={item.done}
+                        onToggle={()=>updateCooldown(i,{...item,done:!item.done})}
+                        duration={item.timings?.work ?? defaultTimings(item.name,"cooldown").work}
+                        onDurationChange={secs=>setCooldownDuration(i,secs)}
+                        dragHandleProps={dp.dragHandleProps} isDragging={dp.isDragging}/>
+                    );
+                  }}/>
                 <AddExerciseRow onAdd={addCooldownEx}/>
               </>
             );
@@ -3287,25 +3412,21 @@ function App() {
                     onBlockSettings={settings=>applyBlockSettings(key,settings)}
                     onDeleteBlock={()=>deleteNamedBlock(key)}
                     dragHandleProps={dragProps.dragHandleProps} isDragging={dragProps.isDragging}/>
-                  {ss.exercises.map((ex,ei)=>(
-                    <ExerciseListRow key={ei}
-                      label={String.fromCharCode(65+ei)}
-                      exercise={ex.name} sets={ex.sets} timings={ex.timings}
-                      onExerciseChange={n=>{
-                        const d={...ss,exercises:ss.exercises.map((e,i)=>i===ei?{...e,name:n}:e)};
-                        updateSuperset(si,d);
-                      }}
-                      onSetsChange={s=>{
-                        const d={...ss,exercises:ss.exercises.map((e,i)=>i===ei?{...e,sets:s}:e)};
-                        updateSuperset(si,d);
-                      }}
-                      onTimingsChange={t=>{
-                        const d={...ss,exercises:ss.exercises.map((e,i)=>i===ei?{...e,timings:t}:e)};
-                        updateSuperset(si,d);
-                      }}
-                      onDelete={()=>deleteSupersetEx(si,ei)}
-                      history={history} phase="strength"/>
-                  ))}
+                  <DraggableList count={ss.exercises.length}
+                    onReorder={(f,t)=>reorderSupersetEx(si,f,t)}
+                    renderItem={(ei,dp)=>{
+                      const ex = ss.exercises[ei];
+                      return (
+                        <ExerciseListRow label={String.fromCharCode(65+ei)}
+                          exercise={ex.name} sets={ex.sets} timings={ex.timings}
+                          onExerciseChange={n=>updateSuperset(si,{...ss,exercises:ss.exercises.map((e,i)=>i===ei?{...e,name:n}:e)})}
+                          onSetsChange={v=>updateSuperset(si,{...ss,exercises:ss.exercises.map((e,i)=>i===ei?{...e,sets:v}:e)})}
+                          onTimingsChange={t=>updateSuperset(si,{...ss,exercises:ss.exercises.map((e,i)=>i===ei?{...e,timings:t}:e)})}
+                          onDelete={()=>deleteSupersetEx(si,ei)}
+                          history={history} phase="strength"
+                          dragHandleProps={dp.dragHandleProps} isDragging={dp.isDragging}/>
+                      );
+                    }}/>
                   <AddExerciseRow onAdd={()=>addSupersetEx(si)}/>
                 </>
               );
@@ -3324,16 +3445,21 @@ function App() {
                     onDeleteBlock={()=>deleteCustomBlock(bi)}
                     subtitle={`${block.exercises.length} exercise${block.exercises.length!==1?"s":""} · Custom block`}
                     dragHandleProps={dragProps.dragHandleProps} isDragging={dragProps.isDragging}/>
-                  {block.exercises.map((ex,ei)=>(
-                    <ExerciseListRow key={ei}
-                      label={`${ei+1}`}
-                      exercise={ex.name} sets={ex.sets} timings={ex.timings}
-                      onExerciseChange={n=>updateCustomBlockEx(bi,ei,{...ex,name:n})}
-                      onSetsChange={s=>updateCustomBlockEx(bi,ei,{...ex,sets:s})}
-                      onTimingsChange={t=>updateCustomBlockEx(bi,ei,{...ex,timings:t})}
-                      onDelete={()=>deleteCustomBlockEx(bi,ei)}
-                      history={history} phase="strength"/>
-                  ))}
+                  <DraggableList count={block.exercises.length}
+                    onReorder={(f,t)=>reorderCustomEx(bi,f,t)}
+                    renderItem={(ei,dp)=>{
+                      const ex = block.exercises[ei];
+                      return (
+                        <ExerciseListRow label={`${ei+1}`}
+                          exercise={ex.name} sets={ex.sets} timings={ex.timings}
+                          onExerciseChange={n=>updateCustomBlockEx(bi,ei,{...ex,name:n})}
+                          onSetsChange={v=>updateCustomBlockEx(bi,ei,{...ex,sets:v})}
+                          onTimingsChange={t=>updateCustomBlockEx(bi,ei,{...ex,timings:t})}
+                          onDelete={()=>deleteCustomBlockEx(bi,ei)}
+                          history={history} phase="strength"
+                          dragHandleProps={dp.dragHandleProps} isDragging={dp.isDragging}/>
+                      );
+                    }}/>
                   <AddExerciseRow onAdd={()=>addCustomBlockEx(bi)}/>
                 </>
               );
@@ -3601,13 +3727,20 @@ const S = {
   swipeDeleteBtn:    { display:"flex", flexDirection:"column", alignItems:"center", gap:3, background:"none", border:"none", cursor:"pointer", width:"100%", height:"100%", justifyContent:"center" },
   previewCard:       { background:"#15151a", border:"1px solid #252530", borderRadius:18, padding:"20px", maxWidth:340, width:"88%", margin:"0 auto" },
   previewCloseBtn:   { marginTop:14, width:"100%", padding:"11px", borderRadius:10, background:"#1f1f26", border:"1px solid #2a2a34", color:"#aaa", fontSize:13, fontWeight:700, cursor:"pointer" },
-  listRow:         { display:"flex", alignItems:"center", gap:10, padding:"12px 18px", width:"100%", background:"none", border:"none", textAlign:"left" },
+  listRow: { display:"flex", alignItems:"center", gap:8, padding:"12px 16px", width:"100%",
+             background:"none", border:"none", textAlign:"left", boxSizing:"border-box", minWidth:0, overflow:"hidden" },
   listRowPill:     { fontSize:11, fontWeight:700, color:"#888", background:"#1a1a1f", padding:"3px 9px", borderRadius:8 },
-  exTitleTapZone:  { flex:1, minWidth:0, textAlign:"left", background:"none", border:"none", cursor:"pointer", padding:"4px 2px" },
-  exCountTapZone:  { display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:1, background:"#15151a", border:"1px solid #232329", borderRadius:9, padding:"4px 6px", flexShrink:0, minWidth:46 },
+  exDragHandle:    { display:"flex", flexShrink:0, cursor:"grab", touchAction:"none" },
+  exTitleTapZone:  { flex:1, minWidth:0, textAlign:"left", background:"none", border:"none",
+                     cursor:"pointer", padding:"4px 2px", overflow:"hidden" },
+  exCountTapZone:  { display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+                     gap:1, background:"#15151a", border:"1px solid #232329", borderRadius:9,
+                     padding:"4px 2px", flexShrink:0, width:46, minWidth:0, boxSizing:"border-box" },
   exCountValue:    { fontSize:14, fontWeight:800, color:"#E8E8EC", fontFamily:"monospace", lineHeight:1 },
   exCountLabel:    { fontSize:8, fontWeight:800, color:"#555", letterSpacing:"0.08em", textTransform:"uppercase", lineHeight:1, marginTop:1 },
-  exCountInput:    { width:"100%", background:"none", border:"none", outline:"none", fontSize:16, fontWeight:800, color:"#E8E8EC", fontFamily:"monospace", textAlign:"center", padding:0, lineHeight:1 },
+  exCountInput:    { width:"100%", minWidth:0, background:"none", border:"none", outline:"none",
+                     fontSize:16, fontWeight:800, color:"#E8E8EC", fontFamily:"monospace",
+                     textAlign:"center", padding:0, lineHeight:1, boxSizing:"border-box" },
   listRowCheck:    { width:30, height:30, borderRadius:8, flexShrink:0, background:"#1a1a1f", border:"1px solid #252530", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer" },
   listRowCheckActive: { background:"#bdf100", border:"1px solid #bdf100" },
   listSectionHeader: { display:"flex", flexDirection:"column", padding:"22px 18px 14px" },
