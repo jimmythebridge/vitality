@@ -746,7 +746,7 @@ function Icon({ name, size=18, color="currentColor" }) {
     settings:  <svg {...p}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>,
     back:      <svg {...p} strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>,
     heart:     <svg {...p} strokeWidth="2" fill={color==="#bdf100"?color:"none"}><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>,
-    edit:      <svg {...p}><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>,
+    edit:      <svg {...p} strokeWidth="1.7"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25z"/><path d="M20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>,
     dragHandle: <svg width={size} height={size} viewBox="0 0 24 24" fill={color} stroke="none">
       <circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/>
       <circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/>
@@ -889,9 +889,6 @@ function TimerScreen({ step, secondsLeft, totalSeconds, running, onPlayPause, on
   return (
     <div style={S.wipPanel} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd}>
 
-      {/* Grab handle — signals the swipe-down-to-minimise gesture */}
-      <div style={S.wipGrabber} onClick={onExit} aria-label="Minimise workout"/>
-
       {/* Header — same anatomy as the minimised bar, so one grows into the other */}
       <div style={S.wipHeader}>
         <div style={{ flex:1, minWidth:0 }}>
@@ -941,9 +938,6 @@ function TimerScreen({ step, secondsLeft, totalSeconds, running, onPlayPause, on
         <DialControl icon="skipNext" label="Skip"     iconSize={28} onClick={onSkip}/>
         <DialControl icon="check"    label="Complete" iconSize={32} onClick={handleDone}/>
       </div>
-
-      {/* Surplus height collects here, as it does in the design */}
-      <div style={{flex:1, minHeight:0}}/>
 
       {/* Up next */}
       <div style={S.wipNextCard}>
@@ -1829,7 +1823,7 @@ function ListSectionHeader({ title, emoji, subtitle, kind="Block", meta, editabl
       )}
       {dragHandleProps && (
         <span style={{...S.blockDragHandle, ...(isDragging?S.blockDragHandleActive:{})}} {...dragHandleProps}>
-          <Icon name="dragHandle" size={16} color={isDragging?"#8a9c00":"#bbbbbb"}/>
+          <Icon name="dragHandle" size={14} color={isDragging?"#8a9c00":"#d2d2d2"}/>
         </span>
       )}
       {showSettings && (
@@ -2126,7 +2120,9 @@ function HomeSection({ emoji, title, onGo }) {
     <div style={S.hSectionRow}>
       <span style={S.hSectionEmoji}>{emoji}</span>
       <span className="block-display" style={S.hSectionTitle}>{title}</span>
-      {onGo && <button className="ui-sans-bold press-scale-sm" style={S.hGoBtn} onClick={onGo}>GO →</button>}
+      {onGo
+        ? <button className="ui-sans-bold press-scale-sm" style={S.hGoBtn} onClick={onGo}>GO →</button>
+        : <span style={{width:55, flexShrink:0}}/>}
     </div>
   );
 }
@@ -2160,6 +2156,7 @@ function HomeCalendar({ sessions, onDayTap }) {
   return (
     <div>
       <div className="ui-sans-bold" style={S.hMonthLabel}>{monthName}</div>
+      <div style={S.gapMonthLabel}/>
       <div style={S.calGridHome}>
         {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(l=>(
           <div key={l} className="ui-sans-med" style={S.wkLabel}>{l}</div>
@@ -2171,7 +2168,7 @@ function HomeCalendar({ sessions, onDayTap }) {
           const isToday = key === todayKey;
           return (
             <button key={key} className="ui-sans-bold press-scale-sm"
-              style={{...S.wkCell, ...cellState(done, isToday)}}
+              style={{...S.wkCell, height:"100%", ...cellState(done, isToday)}}
               onClick={()=>onDayTap && onDayTap(key)}>
               {String(d).padStart(2,"0")}
             </button>
@@ -3139,13 +3136,18 @@ function App() {
       <div className="page-pop" style={S.root}>
         <div style={{flex:1,overflowY:"auto",WebkitOverflowScrolling:"touch",paddingBottom:(timerActive&&minimized)?130:40}}>
 
-          {/* WEEK STRIP — now the first thing on the page (418:794) */}
+          {/* Spacing below is the frame's own: see the table on S.hGutter. */}
+          <div style={{height:24}}/>
+
+          {/* WEEK STRIP (418:794) — frame y 86 */}
           <div style={S.hCalGutter}>
             <WeekStrip sessions={sessions} onDayTap={setActiveDayDetail}/>
           </div>
 
-          {/* NEXT WORKOUT */}
+          <div style={S.gapWeekToS1}/>
           <HomeSection emoji="⚡️" title="NEXT WORKOUT"/>
+
+          <div style={S.gapS1ToHero}/>
           <div style={S.hHeroGutter}>
             <NextWorkoutHero
               tpl={nextWorkout}
@@ -3153,26 +3155,34 @@ function App() {
               onLaunch={launchTemplate}/>
           </div>
 
-          {/* ALL WORKOUTS */}
+          <div style={S.gapHeroToS2}/>
           <HomeSection emoji="🏋" title="ALL WORKOUTS" onGo={()=>setShowAllWorkouts(true)}/>
+
+          <div style={S.gapS2ToRecent}/>
           <div style={S.hGutter}>
-            <span className="ui-sans-bold" style={S.hSubLabel}>Recents</span>
+            <span className="ui-sans-bold" style={{...S.hSubLabel, marginLeft:6}}>Recents</span>
           </div>
+
+          <div style={S.gapRecentToCar}/>
           <WorkoutCarousel templates={recentTemplates} onLaunch={launchTemplate} photos={photos}
             activeId={(timerActive&&minimized)?activeTemplateId:null} elapsedSeconds={elapsedSeconds}/>
+
+          <div style={S.gapCarToBlank}/>
           <div style={S.hCentreRow}>
             <button className="press-scale ui-sans-med" style={S.hOutlineBtn}
               onClick={startBlankWorkout}>New blank workout</button>
           </div>
 
-          {/* WORKOUT HISTORY */}
+          <div style={S.gapBlankToS3}/>
           <HomeSection emoji="🗓️" title="WORKOUT HISTORY" onGo={()=>setShowCalendar(true)}/>
+
+          <div style={S.gapS3ToMonth}/>
           <div style={S.hCalGutter}>
             <HomeCalendar sessions={sessions} onDayTap={setActiveDayDetail}/>
           </div>
 
+          <div style={S.gapToFooter}/>
           <HomeFooter/>
-
         </div>
 
         {timerActive && minimized && (
@@ -3305,9 +3315,6 @@ function App() {
             <input type="file" accept="image/*" style={{display:"none"}}
               onChange={e=>{handlePhotoUpload(e.target.files?.[0]); e.target.value="";}}/>
           </label>
-          <button style={S.edIconBtn} onClick={()=>setShowCalendar(true)} aria-label="Schedule workout">
-            <Icon name="calendar" size={15} color={INK}/>
-          </button>
           <button style={S.edIconBtn} onClick={handleReset} aria-label="Reset workout">
             <Icon name="refresh" size={16} color={INK}/>
           </button>
@@ -3328,16 +3335,6 @@ function App() {
             {activeWorkoutName || "CUSTOM WORKOUT"}
           </button>
         )}
-
-        {/* Tags are not drawn on this frame, but they drive the tag filter and
-            would otherwise be unreachable, so they stay as a compact row. */}
-        <div style={S.edTagRow}>
-          {(activeTpl?.tags || []).map(t => (
-            <span key={t.label} className="ui-sans-med" style={S.edTagPill}>{t.emoji} {t.label}</span>
-          ))}
-          <button className="ui-sans-med" style={{...S.edTagPill, cursor:"pointer", borderStyle:"dashed"}}
-            onClick={()=>setShowTagPicker(true)}>+ Tag</button>
-        </div>
 
         {/* ALL BLOCKS — order driven by resolveBlockOrder(), reorderable via tap-hold-drag */}
         <div style={S.edBlocksWrap}>
@@ -3663,29 +3660,54 @@ const S = {
   homeHeader: { display:"flex", alignItems:"center", justifyContent:"space-between", padding:"16px 18px 6px", flexShrink:0 },
   // ── Home screen — values taken from the Figma frame (402px artboard) ──
   // ── HOME (Figma 418:604) ─────────────────────────────────────────────────
-  // The design uses three gutters: 25 for section headers and the carousel,
-  // 29 for the hero, 35 for the calendars and footer. Kept as drawn.
+  // Every vertical gap below is the measured distance between two nodes in
+  // the 402pt frame, so the running total lands on the design's own y
+  // coordinates instead of drifting. Content y = frame y - 62 (status bar).
+  //
+  //   weekGrid   24   h 57      section1  123  h 48      hero      192  h 223
+  //   section2  475   h 46      recents   537  h 14      carousel  566  h 199.56
+  //   newBlank  790   h 39.44   section3  870  h 46      october   946  h 14
+  //   monthGrid 976   h 196.5   footer   1232  h 41.3
   hGutter:       { paddingLeft:25, paddingRight:25 },
-  hCalGutter:    { paddingLeft:35, paddingRight:35 },
-  hHeroGutter:   { paddingLeft:29, paddingRight:29 },
+  hCalGutter:    { paddingLeft:35, paddingRight:35 },     // grids are 332 wide
+  hHeroGutter:   { paddingLeft:29, paddingRight:32 },     // hero is 341 wide
 
-  hSectionRow:   { display:"flex", alignItems:"center", gap:13, padding:"0 25px",
-                   marginTop:34, marginBottom:19 },
-  hSectionEmoji: { fontSize:26, lineHeight:1, flexShrink:0 },
-  hSectionTitle: { fontSize:31.6, lineHeight:1, color:INK, flex:1, minWidth:0 },
-  hGoBtn:        { fontSize:14, color:INK, background:"none", border:"none",
-                   cursor:"pointer", padding:"4px 0 4px 8px", flexShrink:0, lineHeight:1 },
-  hSubLabel:     { fontSize:14, color:INK, lineHeight:1, display:"block", marginBottom:15 },
-  hMonthLabel:   { fontSize:14, color:INK, lineHeight:1, marginBottom:30 },
+  // Section header: emoji in a fixed 32px slot at x25, title at x63, GO at
+  // x333 (402 - 14 right margin - 55 box). Row is 46 tall; the 31.6px title
+  // needs line-height 1.456 to fill it, which is what sets the row's centre.
+  hSectionRow:   { display:"flex", alignItems:"center",
+                   padding:"0 14px 0 25px", height:46, boxSizing:"content-box" },
+  hSectionEmoji: { width:32, flexShrink:0, fontSize:28, lineHeight:1,
+                   display:"flex", alignItems:"center" },
+  hSectionTitle: { fontSize:31.6, lineHeight:1.456, color:INK, flex:1,
+                   minWidth:0, marginLeft:6 },
+  hGoBtn:        { width:55, fontSize:14, lineHeight:1, color:INK, background:"none",
+                   border:"none", cursor:"pointer", padding:0, flexShrink:0,
+                   textAlign:"left", marginTop:6 },
+  hSubLabel:     { fontSize:14, color:INK, lineHeight:1, display:"block" },
+  hMonthLabel:   { fontSize:14, color:INK, lineHeight:1 },
 
-  hCentreRow:    { display:"flex", justifyContent:"center", marginTop:28 },
+  hCentreRow:    { display:"flex", justifyContent:"center" },
   hOutlineBtn:   { padding:"8.97px 22.43px", borderRadius:18.69, background:"transparent",
                    border:"0.748px solid #353535", color:INK, fontSize:14.95,
                    cursor:"pointer", whiteSpace:"nowrap", lineHeight:1.2 },
 
+  // Gaps, named for the pair of nodes each one sits between.
+  gapWeekToS1:   { height:42 },
+  gapS1ToHero:   { height:21 },
+  gapHeroToS2:   { height:60 },
+  gapS2ToRecent: { height:16 },
+  gapRecentToCar:{ height:15 },
+  gapCarToBlank: { height:24.4 },
+  gapBlankToS3:  { height:40.6 },
+  gapS3ToMonth:  { height:30 },
+  gapMonthLabel: { height:16 },
+  gapToFooter:   { height:59.5 },
+
   // Hero: 341 x 223, r15, inside a 10px translucent white frame (418:797).
   heroCard:      { position:"relative", height:223, borderRadius:15, overflow:"hidden",
-                   border:"10px solid rgba(255,255,255,0.5)", cursor:"pointer" },
+                   border:"10px solid rgba(255,255,255,0.5)", cursor:"pointer",
+                   boxSizing:"border-box" },
   heroPhoto:     { position:"absolute", inset:0, backgroundSize:"cover",
                    backgroundPosition:"center", zIndex:0 },
   heroScrim:     { position:"absolute", inset:0, zIndex:1,
@@ -3695,14 +3717,14 @@ const S = {
                    padding:"3.64px 7.27px", borderRadius:36.36,
                    border:"0.727px solid #ffffff", background:"transparent",
                    color:ON_DARK, fontSize:11.27, lineHeight:1.1, whiteSpace:"nowrap" },
-  heroTitle:     { position:"absolute", left:13, top:45.73, zIndex:3, width:280,
+  heroTitle:     { position:"absolute", left:13, top:45.73, zIndex:3, width:280.8,
                    fontSize:32.6, lineHeight:0.9, color:ON_DARK },
-  heroMeta:      { position:"absolute", left:14, top:100, zIndex:3,
-                   fontSize:11.27, lineHeight:1.35, color:"#ffffff" },
+  heroMeta:      { position:"absolute", left:14, top:85, zIndex:3,
+                   fontSize:11.27, lineHeight:1.33, color:"#ffffff" },
 
   // Footer (418:1102) — unchanged values, now on a light canvas.
   footRow:       { display:"flex", alignItems:"center", justifyContent:"space-between",
-                   gap:12, marginTop:50, paddingLeft:35, paddingRight:35 },
+                   gap:12, height:41.3, paddingLeft:35, paddingRight:31 },
   footText:      { fontSize:16, color:"#555555", lineHeight:1, whiteSpace:"nowrap" },
   footMark:      { fontSize:7.5, lineHeight:1.22, color:"#555555", textAlign:"center",
                    flexShrink:0 },
@@ -3725,15 +3747,13 @@ const S = {
                    background:PANEL, border:"1px solid "+ACCENT, borderBottom:"none",
                    borderRadius:"15px 15px 0 0",
                    marginTop:"env(safe-area-inset-top, 0px)",
-                   padding:"14px 27px calc(24px + env(safe-area-inset-bottom, 0px))" },
+                   padding:"22px 27px calc(24px + env(safe-area-inset-bottom, 0px))" },
 
-  wipGrabber:    { width:38, height:4, borderRadius:4, background:"#3f3f3f",
-                   marginBottom:12, flexShrink:0, cursor:"pointer" },
-  wipHeader:     { display:"flex", alignItems:"center", gap:10, width:"100%" },
-  wipKicker:     { fontSize:14, color:ON_DARK, lineHeight:1, marginBottom:10 },
+  wipHeader:     { display:"flex", alignItems:"flex-start", gap:10, width:"100%" },
+  wipKicker:     { fontSize:14, color:ON_DARK, lineHeight:0.86, marginBottom:10 },
   wipWorkoutName:{ fontSize:24.7, lineHeight:0.9, color:ON_DARK, whiteSpace:"nowrap",
                    overflow:"hidden", textOverflow:"ellipsis" },
-  wipHeaderCtrls:{ display:"flex", alignItems:"center", gap:7, flexShrink:0 },
+  wipHeaderCtrls:{ display:"flex", alignItems:"center", gap:7, flexShrink:0, marginTop:19 },
   wipClock:      { height:27.6, minWidth:54, padding:"0 11.6px", borderRadius:27.8,
                    border:"1.11px solid "+ACCENT, color:ON_DARK, fontSize:14,
                    display:"flex", alignItems:"center", justifyContent:"center",
@@ -3742,12 +3762,12 @@ const S = {
                    background:"transparent", display:"flex", alignItems:"center",
                    justifyContent:"center", cursor:"pointer", padding:0, flexShrink:0 },
 
-  wipProgressWrap:{ width:"100%", marginTop:23.7 },
-  wipPct:        { fontSize:14, color:ON_DARK, lineHeight:1, marginBottom:8 },
+  wipProgressWrap:{ width:"100%", marginTop:19 },
+  wipPct:        { fontSize:14, color:ON_DARK, lineHeight:1, marginBottom:8, marginLeft:1 },
   wipBarRow:     { display:"flex", alignItems:"center", gap:3, width:"100%" },
 
   wipReadout:    { display:"flex", flexDirection:"column", alignItems:"center",
-                   justifyContent:"center", gap:13, width:"100%",
+                   justifyContent:"center", gap:13, width:"100%", height:164,
                    marginTop:81, marginBottom:23 },
   wipExercise:   { fontSize:39.4, lineHeight:0.9, color:ON_DARK, textAlign:"center",
                    width:"100%", whiteSpace:"nowrap", overflow:"hidden" },
@@ -3756,7 +3776,7 @@ const S = {
   wipStateRow:   { display:"flex", alignItems:"center", justifyContent:"space-between",
                    gap:40, width:250, fontSize:14, lineHeight:1, color:ON_DARK },
   wipChipRow:    { display:"flex", alignItems:"center", justifyContent:"center",
-                   gap:5, flexWrap:"wrap", marginBottom:33 },
+                   gap:5, flexWrap:"wrap", marginBottom:33.4 },
   wipChip:       { height:27.6, padding:"0 11.6px", borderRadius:27.8,
                    border:"1.11px solid "+ACCENT, color:ON_DARK, fontSize:17.4,
                    display:"flex", alignItems:"center", justifyContent:"center",
@@ -3769,17 +3789,17 @@ const S = {
   wipCtrlBtn:    { width:60, height:60, borderRadius:41, border:"2.379px solid "+ACCENT,
                    display:"flex", alignItems:"center", justifyContent:"center",
                    cursor:"pointer", padding:0, boxSizing:"border-box" },
-  wipCtrlLabel:  { fontSize:18.3, lineHeight:1, color:ON_DARK, marginTop:14,
+  wipCtrlLabel:  { fontSize:18.27, lineHeight:0.711, color:ON_DARK, marginTop:14,
                    textAlign:"center", whiteSpace:"nowrap" },
 
-  wipNextCard:   { width:"100%", marginTop:0, boxSizing:"border-box",
+  wipNextCard:   { width:334, maxWidth:"100%", marginTop:22, marginLeft:6, alignSelf:"flex-start", boxSizing:"border-box",
                    border:"1px solid #6f6f6f", borderRadius:15, padding:"20px 15px",
                    display:"flex", flexDirection:"column", gap:14 },
   wipNextLabel:  { fontSize:18.3, lineHeight:1, color:ON_DARK },
   wipNextRow:    { display:"flex", alignItems:"center", justifyContent:"space-between",
                    gap:12, width:"100%" },
   wipNextName:   { fontSize:24.7, lineHeight:0.9, color:ON_DARK, whiteSpace:"nowrap",
-                   overflow:"hidden", textOverflow:"ellipsis" },
+                   overflow:"hidden", flex:1, minWidth:0 },
   wipNextTime:   { fontSize:24.7, lineHeight:0.9, color:ON_DARK, textAlign:"right",
                    whiteSpace:"nowrap", flexShrink:0 },
 
@@ -3804,9 +3824,9 @@ const S = {
                    backgroundSize:"cover", backgroundPosition:"center" },
 
   wkGrid:        { display:"grid", gridTemplateColumns:"repeat(7,minmax(0,1fr))",
-                   columnGap:18, rowGap:10, marginTop:24 },
+                   columnGap:18, rowGap:10 },
   wkLabel:       { fontSize:14, color:INK, textAlign:"center", lineHeight:1 },
-  wkCell:        { height:33, borderRadius:25, border:"1px solid", display:"flex",
+  wkCell:        { height:33, borderRadius:25, fontVariantNumeric:"tabular-nums", border:"1px solid", display:"flex",
                    alignItems:"center", justifyContent:"center", fontSize:18, color:INK,
                    cursor:"pointer", padding:0, boxSizing:"border-box", width:"100%",
                    background:"transparent" },
@@ -3822,8 +3842,8 @@ const S = {
   // Calendar card: 1px #5e5e5e, r8, 11/13 padding
   calCard:       { border:"1px solid "+HAIRLINE, borderRadius:8, padding:"13px 11px" },
   calGridHome:   { display:"grid", gridTemplateColumns:"repeat(7,minmax(0,1fr))",
-                   columnGap:18, rowGap:13 },
-  calCellEmpty:  { height:28 },
+                   columnGap:18, rowGap:15, gridAutoRows:"20.25px" },
+  calCellEmpty:  { height:20.25 },
 
 
   weekStrip: { display:"grid", gridTemplateColumns:"repeat(7,1fr)", padding:"2px 12px 6px", gap:2, flexShrink:0 },
@@ -3865,7 +3885,8 @@ const S = {
   listRow: { display:"flex", alignItems:"center", gap:8, padding:"12px 16px", width:"100%",
              background:"none", border:"none", textAlign:"left", boxSizing:"border-box", minWidth:0, overflow:"hidden" },
   listRowPill:     { fontSize:11, fontWeight:700, color:"#666666", background:"#efefef", padding:"3px 9px", borderRadius:8 },
-  exDragHandle:    { display:"flex", flexShrink:0, cursor:"grab", touchAction:"none", opacity:0.55, padding:"2px 2px 2px 0" },
+  exDragHandle:    { display:"flex", flexShrink:0, cursor:"grab", touchAction:"none",
+                     opacity:0.4, width:11, marginLeft:-21, padding:0 },
   exTitleTapZone:  { flex:1, minWidth:0, textAlign:"left", background:"none", border:"none",
                      cursor:"pointer", padding:"4px 2px", overflow:"hidden" },
   exCountTapZone:  { display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
@@ -3882,7 +3903,7 @@ const S = {
   // One white card per block: type pill, block name, edit affordance, then the
   // exercise rows.
   blockCard:       { position:"relative", background:SURFACE, borderRadius:14,
-                     padding:15, marginBottom:16 },
+                     padding:15, marginBottom:17 },
   blockCardHead:   { display:"flex", alignItems:"center", gap:8, marginBottom:16 },
   blockKindPill:   { height:21.36, padding:"0 8.99px", borderRadius:21.52,
                      border:"0.861px solid "+ACCENT, color:INK, fontSize:10,
@@ -3939,14 +3960,14 @@ const S = {
 
   // ── EDITOR CHROME (Figma 418:1512) ───────────────────────────────────────
   edTopBar:        { display:"flex", alignItems:"center", gap:8,
-                     padding:"calc(20px + env(safe-area-inset-top, 0px)) 32px 0 24px" },
+                     padding:"calc(4px + env(safe-area-inset-top, 0px)) 32px 0 24px" },
   edIconBtn:       { width:28, height:28, borderRadius:19.14, background:SURFACE,
                      border:"1.11px solid "+INK, display:"flex", alignItems:"center",
                      justifyContent:"center", cursor:"pointer", padding:0, flexShrink:0 },
-  edKicker:        { fontSize:18.27, color:INK, textAlign:"center", lineHeight:1, marginTop:35 },
+  edKicker:        { fontSize:18.27, color:INK, textAlign:"center", lineHeight:0.7, marginTop:27 },
   edTitle:         { fontSize:24.74, lineHeight:0.9, color:INK, textAlign:"center",
                      background:"none", border:"none", cursor:"pointer", width:"100%",
-                     padding:"0 24px", marginTop:23 },
+                     padding:"0 24px", marginTop:23.2 },
   edTitleInput:    { fontSize:24.74, lineHeight:0.9, color:INK, textAlign:"center",
                      background:"rgba(0,0,0,0.04)", border:"1px dashed "+HAIRLINE,
                      borderRadius:10, width:"calc(100% - 70px)", margin:"23px 35px 0",
@@ -3957,7 +3978,7 @@ const S = {
                      border:"0.861px solid "+ACCENT, color:INK, fontSize:10,
                      background:"transparent", display:"flex", alignItems:"center",
                      justifyContent:"center", whiteSpace:"nowrap", boxSizing:"border-box" },
-  edBlocksWrap:    { padding:"26px 32px 0 35px" },
+  edBlocksWrap:    { padding:"24px 29.99px 0 35px" },     // cards are 337.006 wide
   edBottomBar:     { position:"absolute", bottom:0, left:0, right:0, zIndex:50,
                      display:"flex", alignItems:"center", justifyContent:"center", gap:10,
                      padding:"14px 18px calc(20px + env(safe-area-inset-bottom, 0px))",
