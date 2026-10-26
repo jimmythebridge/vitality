@@ -8,7 +8,7 @@
 // falls back to cache when offline, while static assets (icons, manifest)
 // stay cache-first since they rarely change.
 
-const CACHE = "vitality-v5";
+const CACHE = "vitality-v6";
 const ASSETS = [
   "./",
   "./index.html",
