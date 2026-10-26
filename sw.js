@@ -1,5 +1,5 @@
 // Vitality service worker
-// v4 — cache bumped for the redesigned workout screen; the HTML document
+// v5 — cache bumped for the light-theme redesign; the HTML document
 // stays network-first.
 //
 // v2 was cache-first for everything, so once index.html was cached the app
@@ -8,7 +8,7 @@
 // falls back to cache when offline, while static assets (icons, manifest)
 // stay cache-first since they rarely change.
 
-const CACHE = "vitality-v4";
+const CACHE = "vitality-v5";
 const ASSETS = [
   "./",
   "./index.html",
